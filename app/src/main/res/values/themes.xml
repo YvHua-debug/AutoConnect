@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Compose 负责全部 UI 与配色，这里只需要一个无 ActionBar 的宿主主题。
+      Material 3 的完整主题由 Compose 侧的 ComposeStarterTheme 提供。
+    -->
+    <style name="Theme.ComposeStarter" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

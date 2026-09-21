@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 取自图标原图的背景色，作为自适应图标底层，和前景图无缝衔接 -->
+    <color name="ic_launcher_background">#FEFEFE</color>
+</resources>
