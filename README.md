@@ -437,3 +437,7 @@ Debug 构建带 `.debug` 后缀（`applicationIdSuffix`），可与正式包共�
 - 按 feature 分模块（`:feature:xxx` / `:core:xxx`）拆分多模块结构
 - 引入 Hilt 做依赖注入
 - 补充 `androidTest` 的 Compose UI 测试
+
+## 许可证
+
+[MIT](LICENSE)
