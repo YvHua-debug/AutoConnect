@@ -12,7 +12,7 @@ import android.net.Uri
  * | 客户端 | 入口 | 启动 / 停止 |
  * |---|---|---|
  * | Clash Meta | `com.github.kr328.clash.ExternalControlActivity` | `ACTION_START_CLASH` / `ACTION_STOP_CLASH` |
- * | FLClash | `com.follow.clash.TempActivity` | `com.follow.clash.action.START` / `...STOP` |
+ * | FLClash | `com.follow.clash.QuickActionActivity` | `com.follow.clash.action.START` / `...STOP` |
  * | Surfboard | `com.getsurfboard.ui.activity.DeeplinkActivity` | `surfboard:///start` / `surfboard:///stop` |
  *
  * 三个入口都是各客户端给自己桌面快捷方式 / 快捷设置图块用的同一套控制接口（真机核对过：
@@ -55,7 +55,9 @@ enum class VpnEngine(
         id = "flclash",
         displayName = "FLClash",
         packageName = "com.follow.clash",
-        controlActivity = "com.follow.clash.TempActivity",
+        // FlClash 0.8.98（2026-09-28 更新）把 TempActivity 改名为 QuickActionActivity，action 不变；
+        // 旧名已从清单移除，继续用旧名会抛 ActivityNotFoundException。
+        controlActivity = "com.follow.clash.QuickActionActivity",
         startAction = "com.follow.clash.action.START",
         stopAction = "com.follow.clash.action.STOP",
         stopReliable = true,

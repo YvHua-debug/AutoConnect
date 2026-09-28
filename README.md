@@ -5,7 +5,8 @@
 
 Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保留构建必需的清单与资源。
 
-> 当前版本 **1.1**：v1.0 只支持 Clash Meta、且只能启动；1.1 适配三个客户端，并新增「离开名单自动断开」。
+> 当前版本 **1.1.1**：v1.0 只支持 Clash Meta、且只能启动；1.1 适配三个客户端，并新增「离开名单自动断开」；
+> 1.1.1 跟进 **FLClash 0.8.98** 把控制入口由 `TempActivity` 改名为 `QuickActionActivity`。
 
 ## 功能
 
@@ -46,8 +47,12 @@ Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保
      | 客户端 | 控制入口 | 启动 / 停止 |
      |---|---|---|
      | Clash Meta | `com.github.kr328.clash.ExternalControlActivity` | `ACTION_START_CLASH` / `ACTION_STOP_CLASH` |
-     | FLClash | `com.follow.clash.TempActivity` | `com.follow.clash.action.START` / `…STOP` |
+     | FLClash | `com.follow.clash.QuickActionActivity`（需 0.8.98+） | `com.follow.clash.action.START` / `…STOP` |
      | Surfboard | `com.getsurfboard.ui.activity.DeeplinkActivity` | `surfboard:///start` / `surfboard:///stop` |
+
+     FLClash 的入口在 **0.8.98**（2026-09-28）由 `com.follow.clash.TempActivity` 改名为
+     `com.follow.clash.QuickActionActivity`（action 不变），本应用按新名写死，所以**只支持 FLClash
+     0.8.98 及以上**。
 
      这三个入口就是各客户端给自己的桌面快捷方式 / 快捷设置图块用的同一套接口（真机核对：点 FLClash、
      Surfboard 的图块，执行的就是这里发出的那条指令）。目标 Activity 都是透明主题 + `noHistory`，
@@ -193,6 +198,11 @@ adb shell appops set com.example.composestarter.debug 10021 ignore   # 关后台
   也不会重拉，而且 ActivityManager 自己的重启排期带指数退避（实测最长排到 68 分钟）。
   服务改成靠 `onTaskRemoved()` + 1 秒闹钟自愈（实测约 2 秒恢复），
   15 分钟一次的例行看门狗是最后兜底。细节见「小米 / HyperOS」的第三个坑。
+- **FLClash 的控制入口随版本改名，装在旧版本上会以「控制指令发送失败」告终。** 0.8.98 起入口是
+  `com.follow.clash.QuickActionActivity`，更早的版本是 `com.follow.clash.TempActivity`
+  （action 都是 `com.follow.clash.action.START` / `STOP`）。本应用按 0.8.98 写死，在旧版本上会抛
+  `ActivityNotFoundException`，界面上表现为「命中记录里有 ChatGPT、但 VPN 未建立」。
+  客户端再升级之后如果又冒出这个症状，先 `adb shell dumpsys package com.follow.clash` 确认入口有没有再改名。
 
 ## 后台占用优化
 
@@ -449,14 +459,14 @@ adb shell appops set com.example.composestarter.debug SYSTEM_ALERT_WINDOW allow
 # 手动启动 VPN（等价于点界面上的「立即启动 VPN」，换成当前选中的那个客户端）
 adb shell am start -a com.github.metacubex.clash.meta.action.START_CLASH `
   -n com.github.metacubex.clash.meta/com.github.kr328.clash.ExternalControlActivity
-adb shell am start -a com.follow.clash.action.START -n com.follow.clash/com.follow.clash.TempActivity
+adb shell am start -a com.follow.clash.action.START -n com.follow.clash/com.follow.clash.QuickActionActivity
 adb shell am start -a android.intent.action.VIEW -d "surfboard:///start" `
   -n com.getsurfboard/.ui.activity.DeeplinkActivity
 
 # 手动停止 VPN（START_CLASH → STOP_CLASH、action.START → action.STOP、start → stop）
 adb shell am start -a com.github.metacubex.clash.meta.action.STOP_CLASH `
   -n com.github.metacubex.clash.meta/com.github.kr328.clash.ExternalControlActivity
-adb shell am start -a com.follow.clash.action.STOP -n com.follow.clash/com.follow.clash.TempActivity
+adb shell am start -a com.follow.clash.action.STOP -n com.follow.clash/com.follow.clash.QuickActionActivity
 adb shell am start -a android.intent.action.VIEW -d "surfboard:///stop" `
   -n com.getsurfboard/.ui.activity.DeeplinkActivity
 
