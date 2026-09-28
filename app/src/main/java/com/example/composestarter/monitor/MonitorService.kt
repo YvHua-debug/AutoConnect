@@ -21,6 +21,7 @@ import com.example.composestarter.R
 import com.example.composestarter.data.AppRepository
 import com.example.composestarter.data.SettingsStore
 import com.example.composestarter.data.VpnAppCatalog
+import com.example.composestarter.data.VpnEngine
 import com.example.composestarter.data.VpnRequiredApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -54,7 +55,7 @@ class MonitorService : Service() {
 
     private lateinit var detector: ForegroundAppDetector
     private lateinit var appRepository: AppRepository
-    private lateinit var clashController: ClashController
+    private lateinit var vpnController: VpnController
 
     private var lastPackage: String? = null
     private var lastHitAt = 0L
@@ -65,9 +66,33 @@ class MonitorService : Service() {
      */
     private var connectTask: ConnectTask? = null
 
+    /**
+     * 「把 VPN 断开」这件事的进行时状态（见 [updateAutoStop]）。
+     * 和 [connectTask] 一样只在轮询协程里读写。
+     */
+    private var stopTask: StopTask? = null
+
+    /** 当前生效的 VPN 客户端，以及它是不是刚从设置里改过。 */
+    private var engine: VpnEngine? = null
+    private var engineStateKey: String? = null
+    private var engineCheckedAt = 0L
+
+    /**
+     * 自动断开的两段状态：
+     * [listedArmed] = 这一次会话里出现过名单应用（没出现过就绝不去动用户的 VPN）；
+     * [leftListedAt] = 刚离开名单应用的时刻，0 表示「此刻就在名单应用里」。
+     */
+    private var listedArmed = false
+    private var leftListedAt = 0L
+
+    /** 最近一个处于前台的名单应用，用来在断开之后交代「是哪个应用用完了」。 */
+    private var lastListedPackage: String? = null
+    private var lastListedName: String? = null
+
     /** 最近一次读到的 VPN 状态与读取时间，避免每轮都去问系统。 */
     private var lastVpnActive = false
     private var vpnCheckedAt = 0L
+    private var lastVpnOwner: VpnEngine? = null
 
     /** 上次统计「已安装应用」时的自定义名单，名单没变就不用重新查 PackageManager。 */
     private var installedPackagesKey: List<VpnRequiredApp>? = null
@@ -87,7 +112,7 @@ class MonitorService : Service() {
         SettingsStore.attach(applicationContext)
         detector = ForegroundAppDetector(this)
         appRepository = AppRepository(this)
-        clashController = ClashController(this)
+        vpnController = VpnController(this)
 
         createNotificationChannels()
         refreshStatusNotification()
@@ -131,9 +156,9 @@ class MonitorService : Service() {
         monitorJob = scope.launch(CoroutineExceptionHandler { _, error ->
             Log.e(TAG, "轮询循环异常退出，等待下一次启动请求自愈", error)
         }) {
-            // 这两件事都要走 PackageManager，放到后台线程做，别拖慢服务启动。
+            // 这几件事都要走 PackageManager，放到后台线程做，别拖慢服务启动。
             refreshInstalledPackages()
-            MonitorRepository.setClashInstalled(clashController.isInstalled())
+            refreshEngines(now = 0L)
 
             while (isActive) {
                 val now = System.currentTimeMillis()
@@ -148,15 +173,21 @@ class MonitorService : Service() {
 
                 // 用户刚在界面里加了 / 删了自定义应用时，重新确认一次哪些已安装
                 refreshInstalledPackages()
+                // 用户可能在界面里换了 VPN 客户端，或刚好装了新的，跟着确认一次
+                refreshEngines(now)
 
                 // VPN 状态是「有没有连上」的唯一依据，所以名单应用在前台、或正在补连时
                 // 都要拿实时值，不能走那 5 秒的缓存。
-                val vpnActive = currentVpnState(now, force = entry != null || hasPendingConnect())
+                val vpnActive = currentVpnState(
+                    now,
+                    force = entry != null || hasPendingConnect() || hasPendingStop(),
+                )
 
                 if (packageName != null) {
                     handleForegroundChange(packageName, entry, vpnActive, now)
                 }
                 updateConnectTask(entry, vpnActive, now)
+                updateAutoStop(entry, vpnActive, now)
 
                 // 名单应用在前台时只需要关心「什么时候离开」，间隔可以放宽；
                 // 空闲时用短间隔，保证用户一打开名单应用就能很快被发现。
@@ -168,7 +199,7 @@ class MonitorService : Service() {
                 delay(
                     when {
                         !interactive -> POLL_INTERVAL_SCREEN_OFF_MS
-                        isConnecting() -> POLL_INTERVAL_MS
+                        isConnecting() || hasPendingStop() -> POLL_INTERVAL_MS
                         entry != null -> POLL_INTERVAL_LISTED_MS
                         else -> POLL_INTERVAL_MS
                     },
@@ -193,6 +224,23 @@ class MonitorService : Service() {
     }
 
     /**
+     * 解析「现在该联动哪个 VPN 客户端」。
+     *
+     * 选中项来自设置，客户端装没装要走 PackageManager，所以按 [ENGINE_RECHECK_INTERVAL_MS]
+     * 降频；用户改了选择则立刻重查。解出来的结果同时用于启动和停止，方向不会打架。
+     */
+    private fun refreshEngines(now: Long) {
+        val selectedId = SettingsStore.vpnEngine.value
+        if (now == 0L || selectedId != engineStateKey || now - engineCheckedAt >= ENGINE_RECHECK_INTERVAL_MS) {
+            engineStateKey = selectedId
+            engineCheckedAt = now
+            val installed = vpnController.installedEngines()
+            engine = VpnEngine.effective(selectedId, installed)
+            MonitorRepository.setEngines(installed, engine)
+        }
+    }
+
+    /**
      * 读取 VPN 状态。系统查询有成本，因此按 [VPN_CHECK_INTERVAL_MS] 降频；
      * 需要立即取值时（[force]）才实时查询。
      */
@@ -204,9 +252,20 @@ class MonitorService : Service() {
         val active = detector.isVpnActive()
         if (active != lastVpnActive) {
             Log.d(TAG, "VPN 状态变化：$lastVpnActive -> $active")
+            // 归属决定自动断开时该给谁发停止指令，换了一条隧道就要重新认一次
+            lastVpnOwner = if (active) vpnController.activeVpnEngine() else null
+            if (active) Log.i(TAG, "当前隧道归属：${lastVpnOwner?.displayName ?: "未知"}")
+        }
+        // 隧道刚起来的那一瞬间，系统可能还没把「谁建的隧道」填进去（activeNetwork 短暂地仍是底层网络），
+        // 所以认不出来就每轮补认一次，认到为止——否则自动断开只能退回用户选中的客户端，
+        // 用户手动开的另一个客户端就收不掉了。
+        if (active && lastVpnOwner == null) {
+            lastVpnOwner = vpnController.activeVpnEngine()
+            if (lastVpnOwner != null) Log.i(TAG, "当前隧道归属（补认）：${lastVpnOwner?.displayName}")
         }
         lastVpnActive = active
         MonitorRepository.setVpnActive(lastVpnActive)
+        MonitorRepository.setEngineOwner(if (active) lastVpnOwner else null)
         return lastVpnActive
     }
 
@@ -238,6 +297,9 @@ class MonitorService : Service() {
         MonitorRepository.onForegroundChanged(packageName, appRepository.labelOf(packageName))
 
         if (entry == null) return
+        // 离开名单应用时（updateAutoStop）要交代「是哪个应用用完了」，所以这里先记下来
+        lastListedPackage = packageName
+        lastListedName = entry.displayName
         if (now - lastHitAt < MIN_HIT_INTERVAL_MS) return
         lastHitAt = now
 
@@ -257,7 +319,7 @@ class MonitorService : Service() {
             notifyHit(entry.displayName, HitNotice.VpnConnected)
             return
         }
-        if (!SettingsStore.autoStartClash.value) {
+        if (!SettingsStore.autoStartVpn.value) {
             notifyHit(entry.displayName, HitNotice.NotConnected)
             return
         }
@@ -287,12 +349,12 @@ class MonitorService : Service() {
      * 「名单应用在前台，VPN 就该是连着的」——每轮轮询都跑一遍。
      *
      * 为什么不能只在命中名单时发一条指令了事：那样有三个洞，每个都会把用户留在
-     * 「Clash 已拉起 · VPN 未连接」上不动，而且再也出不来。
+     * 「已拉起客户端 · VPN 未连接」上不动，而且再也出不来。
      *
      * 1. `startActivity` 不抛异常只说明指令递出去了，系统完全可能把它**静默拦掉**。
      *    真机实测（HyperOS 3 / Android 16）：小米的「后台弹出界面」没允许时日志是
-     *    `Abort background activity starts from <uid>`，Clash 根本没被拉起，而应用这边
-     *    `startActivity` 正常返回。于是「已拉起 Clash」是假结论，只发一次，
+     *    `Abort background activity starts from <uid>`，客户端根本没被拉起，而应用这边
+     *    `startActivity` 正常返回。于是「已拉起客户端」是假结论，只发一次，
      *    用户不切走就永远不会再试（实测：拦截状态下停在名单应用里 60 秒，一条指令都不会再发）。
      * 2. Clash 自己的 `START_CLASH` 在「内核已经在跑、只是隧道没建起来」时是**空操作**
      *    （源码：`if (isClashRunning()) 提示已启动 else startClash()`），连发才有机会连上。
@@ -309,7 +371,7 @@ class MonitorService : Service() {
             // 下一次机会，以前这种情况会一直停在「未连接」。
             // 这种补连没有对应的「命中记录」，所以任务不带 hitIds，只推提醒。
             if (vpnActive || entry == null) return
-            if (!SettingsStore.autoStartClash.value) return
+            if (!SettingsStore.autoStartVpn.value) return
             ConnectTask(entry.packageName, entry.displayName).also { connectTask = it }
         }
 
@@ -332,13 +394,14 @@ class MonitorService : Service() {
         }
         task.leftForegroundAt = 0L
 
-        // 没有指望连上的情况：联动被关掉、或 Clash 不在
-        if (!SettingsStore.autoStartClash.value) {
+        // 没有指望连上的情况：联动被关掉、或客户端不在
+        if (!SettingsStore.autoStartVpn.value) {
             connectTask = null
             applyConnectResult(task, established = false, notice = null)
             return
         }
-        if (!clashController.isInstalled()) {
+        val currentEngine = engine
+        if (currentEngine == null || !vpnController.isInstalled(currentEngine)) {
             connectTask = null
             applyConnectResult(task, established = false, notice = null)
             return
@@ -349,13 +412,17 @@ class MonitorService : Service() {
 
         task.attempts++
         task.lastAttemptAt = now
-        val sent = clashController.start()
-        Log.i(TAG, "第 ${task.attempts} 次拉起 Clash（${task.displayName}）sent=$sent，等隧道起来")
+        val sent = vpnController.start(currentEngine)
+        Log.i(
+            TAG,
+            "第 ${task.attempts} 次拉起 ${currentEngine.displayName}（${task.displayName}）" +
+                "sent=$sent，等隧道起来",
+        )
 
         if (task.attempts == 1) {
             for (hitId in task.hitIds) {
                 MonitorRepository.updateHit(hitId) {
-                    it.copy(clashTriggered = true, clashConnecting = true)
+                    it.copy(vpnTriggered = true, vpnConnecting = true)
                 }
             }
             notifyHit(task.displayName, HitNotice.AutoConnecting)
@@ -375,7 +442,7 @@ class MonitorService : Service() {
     /**
      * 把当前结果写回这条任务带的所有命中记录。
      *
-     * 成功以**回读到的 VPN 状态**为准；失败时顺手判断一下是不是系统把「后台拉起 Clash」
+     * 成功以**回读到的 VPN 状态**为准；失败时顺手判断一下是不是系统把「后台拉起客户端」
      * 拦掉了（[isBackgroundStartBlocked]），界面和通知据此给出「去开启后台弹出界面」这种
      * 能直接照着做的提示，而不是干巴巴一句「未连接」。
      */
@@ -384,10 +451,10 @@ class MonitorService : Service() {
         for (hitId in task.hitIds) {
             MonitorRepository.updateHit(hitId) {
                 it.copy(
-                    clashTriggered = task.attempts > 0,
-                    clashConnecting = false,
-                    clashVpnEstablished = established,
-                    clashBlocked = blocked,
+                    vpnTriggered = task.attempts > 0,
+                    vpnConnecting = false,
+                    vpnEstablished = established,
+                    vpnBlocked = blocked,
                 )
             }
         }
@@ -409,6 +476,8 @@ class MonitorService : Service() {
 
     private fun hasPendingConnect(): Boolean = connectTask != null
 
+    private fun hasPendingStop(): Boolean = stopTask != null
+
     /** 是否处于「正在快速补连」的阶段：这期间轮询间隔保持短的，好及时看到隧道起来。 */
     private fun isConnecting(): Boolean {
         val task = connectTask
@@ -416,7 +485,123 @@ class MonitorService : Service() {
     }
 
     /**
-     * 「从后台拉起 Clash」会不会被系统直接拒绝。
+     * 「名单应用退到后台 → 把 VPN 断开」——每轮轮询都跑一遍。
+     *
+     * 只对「刚刚离开的名单应用」动手，而且分两步：
+     *
+     * 1. 先等 [AUTO_STOP_GRACE_MS]，这期间用户切回任何一个名单应用都会取消。
+     *    用户从 ChatGPT 点开一个链接、或者只是下拉看一眼通知，都不该把隧道拆掉；
+     * 2. 到点后按 [STOP_RETRY_INTERVAL_MS] 发停止指令，直到**回读到的 VPN 状态**真的变成未连接为止。
+     *
+     * 第 2 步是这次重做的关键：以前那版是「发一条停止指令就认为断开了」，而各客户端的停止入口
+     * 都只是「递一条指令」——被系统拦掉、进程状态不对时都会静默失效，于是界面上写着已断开、隧道
+     * 其实还挂着。现在一律以回读到的状态收尾，断不掉就如实报失败（见 README「已知限制」）。
+     */
+    private fun updateAutoStop(entry: VpnRequiredApp?, vpnActive: Boolean, now: Long) {
+        val task = stopTask
+
+        // 1) 正在断开：以回读到的真实状态推进
+        if (task != null) {
+            if (entry != null) {
+                // 用户又回到名单应用里了：隧道留着，别断
+                stopTask = null
+                Log.i(TAG, "用户回到 ${entry.displayName}，取消停止 VPN")
+                return
+            }
+            if (!vpnActive) {
+                stopTask = null
+                finishStop(task, stopped = true, notice = HitNotice.AutoStopped)
+                return
+            }
+            if (now - task.lastAttemptAt < STOP_RETRY_INTERVAL_MS) return
+            if (task.attempts >= STOP_MAX_ATTEMPTS) {
+                // 这个客户端停不掉：还有别的客户端在跑就换一个再试，全试完才报失败
+                if (task.advance()) {
+                    Log.i(
+                        TAG,
+                        "${task.engines[task.engineIndex - 1].displayName} 没停掉，改试 ${task.engine.displayName}",
+                    )
+                } else {
+                    stopTask = null
+                    finishStop(task, stopped = false, notice = HitNotice.StopFailed)
+                    return
+                }
+            }
+            attemptStop(task, now)
+            return
+        }
+
+        // 2) 没在断开：判断这一次该不该开始
+        if (!SettingsStore.autoStopVpn.value) {
+            listedArmed = false
+            leftListedAt = 0L
+            return
+        }
+        if (entry != null) {
+            listedArmed = true
+            leftListedAt = 0L
+            return
+        }
+        // 从来没进过名单应用（刚开机、或者用户压根没开过）：不去动用户的 VPN
+        if (!listedArmed) return
+        if (!vpnActive) {
+            // 反正已经没有 VPN 了，收工
+            listedArmed = false
+            leftListedAt = 0L
+            return
+        }
+        if (leftListedAt == 0L) {
+            leftListedAt = now
+            Log.i(TAG, "已离开名单应用，${AUTO_STOP_GRACE_MS / 1000} 秒后自动断开 VPN")
+            return
+        }
+        if (now - leftListedAt < AUTO_STOP_GRACE_MS) return
+
+        // 先停「真正在建隧道的那一个」：用户手动开的另一个客户端也能被正确收掉。
+        // 但隧道归属不一定读得到（实测 HyperOS 3 上 ownerUid 一律是 -1，见 VpnController），
+        // 所以还要留后手：这个客户端停不掉就依次换其它已安装的客户端再试，全试完隧道还在才报失败。
+        // 多试一个客户端，总比停在「断开失败」上强。
+        val preferred = vpnController.activeVpnEngine() ?: engine ?: return
+        val candidates = buildList {
+            add(preferred)
+            addAll(vpnController.installedEngines().filter { it != preferred })
+        }
+        val started = StopTask(candidates, lastListedPackage, lastListedName).also { stopTask = it }
+        if (candidates.size > 1) {
+            Log.i(TAG, "停止顺序：${candidates.joinToString(" → ") { it.displayName }}")
+        }
+        attemptStop(started, now)
+    }
+
+    /** 发一次停止指令。 */
+    private fun attemptStop(task: StopTask, now: Long) {
+        task.attempts++
+        task.lastAttemptAt = now
+        val sent = vpnController.stop(task.engine)
+        Log.i(TAG, "第 ${task.attempts} 次停止 ${task.engine.displayName} sent=$sent，等隧道断开")
+    }
+
+    /** 收尾：把结果写回命中记录、推一条提醒。 */
+    private fun finishStop(task: StopTask, stopped: Boolean, notice: HitNotice?) {
+        task.appPackage?.let { MonitorRepository.markLatestHitStopped(it, stopped) }
+        if (!stopped) {
+            // 已安装的客户端全试过还是断不掉：这一次先收手，别每隔十几秒就把几个客户端轮流点一遍
+            // （每点一次都会把它们的控制页拉起来一次）。用户下次打开名单应用时会重新武装。
+            listedArmed = false
+            leftListedAt = 0L
+        }
+        Log.i(
+            TAG,
+            "停止结果：stopped=$stopped 试到第 ${task.engineIndex + 1}/${task.engines.size} 个客户端" +
+                "（${task.engine.displayName}）attempts=${task.attempts} app=${task.appName ?: "未知"}",
+        )
+        // 提醒里报「最该负责的那个」（隧道归属 / 用户选中的那一个），而不是最后试的那个
+        val name = task.appName
+        if (notice != null && name != null) notifyHit(name, notice, task.engines.first().displayName)
+    }
+
+    /**
+     * 后台拉起 VPN 客户端会不会被系统直接拒绝。
      *
      * 这两条都会让 `startActivity` 正常返回、而 Activity 根本不启动，应用侧拿不到任何回调：
      * - 没有「悬浮窗」权限：Android 10 起不允许后台启动 Activity；
@@ -447,6 +632,34 @@ class MonitorService : Service() {
         var warned = false
     }
 
+    /**
+     * 一次「把 VPN 断开」的尝试过程。
+     *
+     * [engines] 是依次尝试的客户端（隧道归属排最前，认不出归属就是用户选中的那个）：
+     * 前一个停不掉就换下一个，全都试完隧道还在才报失败。
+     * [appPackage] / [appName] 是用户刚离开的那个名单应用：结果要写回它的命中记录，
+     * 通知里也要说清楚「是哪个应用用完了才断的」。
+     */
+    private class StopTask(
+        val engines: List<VpnEngine>,
+        val appPackage: String?,
+        val appName: String?,
+    ) {
+        var engineIndex = 0
+        var attempts = 0
+        var lastAttemptAt = 0L
+
+        val engine: VpnEngine get() = engines[engineIndex]
+
+        /** 换下一个客户端重试（次数清零）；没有下一个了返回 false。 */
+        fun advance(): Boolean {
+            if (engineIndex >= engines.lastIndex) return false
+            engineIndex++
+            attempts = 0
+            return true
+        }
+    }
+
     /** 命中名单时要推哪一条提醒。 */
     private enum class HitNotice {
         /** 打开时 VPN 本来就连着。 */
@@ -461,21 +674,33 @@ class MonitorService : Service() {
         /** 补发了几次指令还是没连上。 */
         ConnectFailed,
 
-        /** 同上，而且看起来是系统把「后台拉起 Clash」拦掉了。 */
+        /** 同上，而且看起来是系统把「后台拉起客户端」拦掉了。 */
         StartBlocked,
 
         /** 没开自动联动（用户关掉了开关），就是没有 VPN。 */
         NotConnected,
+
+        /** 离开名单应用后，回读到 VPN 真的断开了。 */
+        AutoStopped,
+
+        /** 发了几次停止指令，回读到的 VPN 还是连着的。 */
+        StopFailed,
     }
 
-    private fun notifyHit(displayName: String, notice: HitNotice) {
+    private fun notifyHit(displayName: String, notice: HitNotice, engineName: String? = null) {
         val text = when (notice) {
             HitNotice.VpnConnected -> getString(R.string.notification_text_hit_with_vpn, displayName)
             HitNotice.AutoConnecting -> getString(R.string.notification_text_hit_auto_connecting, displayName)
             HitNotice.AutoConnected -> getString(R.string.notification_text_hit_auto_connected, displayName)
-            HitNotice.ConnectFailed -> getString(R.string.notification_text_hit_clash_failed, displayName)
-            HitNotice.StartBlocked -> getString(R.string.notification_text_hit_clash_blocked, displayName)
+            HitNotice.ConnectFailed -> getString(R.string.notification_text_hit_connect_failed, displayName)
+            HitNotice.StartBlocked -> getString(R.string.notification_text_hit_start_blocked, displayName)
             HitNotice.NotConnected -> getString(R.string.notification_text_hit_without_vpn, displayName)
+            HitNotice.AutoStopped -> getString(R.string.notification_text_vpn_stopped, displayName)
+            HitNotice.StopFailed -> getString(
+                R.string.notification_text_vpn_stop_failed,
+                displayName,
+                engineName.orEmpty(),
+            )
         }
         notifyText(text)
     }
@@ -615,7 +840,7 @@ class MonitorService : Service() {
          * 「补连 VPN」的节奏。
          *
          * 快速阶段每 [CONNECT_RETRY_INTERVAL_MS] 补发一次启动指令，共 [CONNECT_FAST_ATTEMPTS] 次
-         * （约覆盖前 10 秒：Clash 冷启动、系统忙、指令被吞掉都在这段时间里能救回来）；
+         * （约覆盖前 10 秒：客户端冷启动、系统忙、指令被吞掉都在这段时间里能救回来）；
          * 之后降到每分钟一次长期兜底——用户还停在名单应用里时不放弃，比如他刚去把
          * 「后台弹出界面」打开，下一分钟就能自己连上。
          */
@@ -625,6 +850,24 @@ class MonitorService : Service() {
 
         /** 用户离开名单应用之后再观察多久，避免「刚切走隧道才起来」被误判成没连上。 */
         private const val CONNECT_LEAVE_GRACE_MS = 6_000L
+
+        /**
+         * 「自动断开 VPN」：离开名单应用之后先等 [AUTO_STOP_GRACE_MS] 再动手。
+         *
+         * 这段时间是给「临时切走」留的——用户从 ChatGPT 点开一个链接、或者下拉看一下通知，
+         * 都会短暂离开名单应用；回到任何一个名单应用就取消，隧道不会被拆掉又立刻重建。
+         */
+        private const val AUTO_STOP_GRACE_MS = 8_000L
+
+        /**
+         * 断开的补发节奏与上限：以回读到的状态收尾，没断就再发；一个客户端发满
+         * [STOP_MAX_ATTEMPTS] 次还没断掉，就换下一个已安装的客户端继续试。
+         */
+        private const val STOP_RETRY_INTERVAL_MS = 2_000L
+        private const val STOP_MAX_ATTEMPTS = 4
+
+        /** VPN 客户端安装状态的复查间隔（用户可能刚装了 / 卸了一个）。 */
+        private const val ENGINE_RECHECK_INTERVAL_MS = 60_000L
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(

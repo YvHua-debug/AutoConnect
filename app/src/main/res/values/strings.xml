@@ -22,7 +22,7 @@
     <string name="permission_autostart">自启动 / 后台运行</string>
     <string name="permission_autostart_desc">小米、华为等机型必须手动允许，否则息屏后会被清理</string>
     <string name="permission_background_popup">后台弹出界面</string>
-    <string name="permission_background_popup_desc">小米机型必须开启，否则后台无法拉起 Clash（在权限页的「其他权限」里）</string>
+    <string name="permission_background_popup_desc">小米机型必须开启，否则后台无法拉起 VPN 客户端（在权限页的「其他权限」里）</string>
     <string name="permission_granted">已授权</string>
     <string name="action_grant">去授权</string>
     <string name="action_open_settings">去设置</string>
@@ -80,21 +80,36 @@
     <string name="notification_text_hit_without_vpn">打开 %1$s · 未连接 VPN</string>
     <string name="notification_text_hit_auto_connecting">打开 %1$s · 正在自动连接 VPN…</string>
     <string name="notification_text_hit_auto_connected">打开 %1$s · 已自动连接 VPN</string>
-    <string name="notification_text_hit_clash_failed">打开 %1$s · 自动连接失败，Clash 没能建立 VPN</string>
-    <string name="notification_text_hit_clash_blocked">打开 %1$s · 后台拉起 Clash 被系统拦截，请开启「后台弹出界面」</string>
-    <!-- Clash Meta 联动 -->
-    <string name="clash_section">Clash Meta 联动</string>
-    <string name="clash_auto_start">命中名单时自动启动 VPN</string>
-    <string name="clash_auto_start_desc">后台静默执行；首次启动需要系统 VPN 授权弹窗</string>
-    <string name="clash_installed">Clash Meta 已安装</string>
-    <string name="clash_not_installed">未检测到 Clash Meta，无法自动启动</string>
-    <string name="hit_clash_started">已拉起 Clash</string>
-    <string name="hit_clash_connecting">正在自动连接 VPN…</string>
-    <string name="hit_clash_vpn_ok">已自动建立 VPN</string>
-    <string name="hit_clash_vpn_failed">Clash 已拉起 · VPN 未建立</string>
-    <string name="hit_clash_blocked">被系统拦截 · 请开启「后台弹出界面」</string>
-    <string name="clash_profile_hint">提示：Clash Meta 里需要先选中一个配置（Profile），并完成一次系统的 VPN 授权，自动启动才能真正建立隧道。小米机型还必须在「后台弹出界面」里允许本应用，否则后台拉起 Clash 会被系统拒绝。</string>
-    <string name="action_start_clash_now">立即启动 VPN</string>
-    <string name="clash_start_sent">已发送启动指令</string>
-    <string name="clash_start_failed">发送失败，未检测到 Clash Meta</string>
+    <string name="notification_text_hit_connect_failed">打开 %1$s · 自动连接失败，客户端没能建立 VPN</string>
+    <string name="notification_text_hit_start_blocked">打开 %1$s · 后台拉起 VPN 客户端被系统拦截，请开启「后台弹出界面」</string>
+    <string name="notification_text_vpn_stopped">已离开 %1$s · 已自动断开 VPN</string>
+    <string name="notification_text_vpn_stop_failed">已离开 %1$s · %2$s 没能断开 VPN，可在它自己的界面里手动停止</string>
+
+    <!-- VPN 联动 -->
+    <string name="vpn_section">VPN 联动</string>
+    <string name="vpn_engine_title">VPN 客户端</string>
+    <string name="vpn_engine_none">未检测到可联动的客户端</string>
+    <string name="vpn_engine_not_installed">未安装</string>
+    <string name="vpn_engine_stop_ok">可启停</string>
+    <string name="vpn_engine_stop_risky">停止不可靠</string>
+    <string name="vpn_hint">三个客户端都通过它们自己对外导出的控制入口启停，本应用不碰你的配置、节点和订阅。</string>
+    <string name="vpn_clash_stop_warning">实测 Clash Meta 的停止入口在冷启动时经常收不到指令（要它的界面被打开过一次才生效，这是它自己的限制）。想要稳定的自动断开，建议选 FLClash 或 Surfboard。</string>
+    <string name="vpn_auto_start">命中名单时自动启动 VPN</string>
+    <string name="vpn_auto_start_desc">后台静默执行；首次启动需要系统 VPN 授权弹窗</string>
+    <string name="vpn_auto_stop">离开名单应用时自动断开 VPN</string>
+    <string name="vpn_auto_stop_desc">离开约 8 秒后断开；这期间回到任意名单应用就取消</string>
+    <string name="hit_vpn_started">已拉起 VPN</string>
+    <string name="hit_vpn_connecting">正在自动连接 VPN…</string>
+    <string name="hit_vpn_established">已自动建立 VPN</string>
+    <string name="hit_vpn_failed">VPN 未建立</string>
+    <string name="hit_vpn_blocked">被系统拦截 · 请开启「后台弹出界面」</string>
+    <string name="hit_vpn_stopped">已自动断开</string>
+    <string name="hit_vpn_stop_failed">断开失败</string>
+    <string name="vpn_profile_hint">提示：客户端里要先选中一个配置（Clash Meta 的 Profile、FLClash 的配置、Surfboard 的配置文件），并完成一次系统的 VPN 授权，自动启动才能真正建立隧道。小米机型还必须在「后台弹出界面」里允许本应用，否则后台拉起客户端会被系统拒绝。</string>
+    <string name="action_start_vpn_now">立即启动 VPN</string>
+    <string name="action_stop_vpn_now">立即断开 VPN</string>
+    <string name="vpn_start_sent">已发送启动指令</string>
+    <string name="vpn_start_failed">发送失败，没有可联动的客户端</string>
+    <string name="vpn_stop_sent">已发送停止指令</string>
+    <string name="vpn_stop_failed">发送失败，没有可联动的客户端</string>
 </resources>

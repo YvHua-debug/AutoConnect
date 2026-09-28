@@ -24,6 +24,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -51,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.composestarter.R
 import com.example.composestarter.data.VpnAppCatalog
+import com.example.composestarter.data.VpnEngine
 import com.example.composestarter.data.VpnRequiredApp
 import com.example.composestarter.monitor.DetectionHit
 import com.example.composestarter.monitor.MonitorPermissions
@@ -64,13 +66,17 @@ import java.util.Locale
 fun MonitorScreen(
     state: MonitorUiState,
     permissions: MonitorPermissions.Snapshot,
-    autoStartClash: Boolean,
+    autoStartVpn: Boolean,
+    autoStopVpn: Boolean,
     customApps: List<VpnRequiredApp>,
     showStatusNotification: Boolean,
     onToggleService: (Boolean) -> Unit,
     onToggleShowStatusNotification: (Boolean) -> Unit,
-    onToggleClashAutoStart: (Boolean) -> Unit,
-    onStartClashNow: () -> Unit,
+    onToggleVpnAutoStart: (Boolean) -> Unit,
+    onToggleVpnAutoStop: (Boolean) -> Unit,
+    onSelectVpnEngine: (VpnEngine) -> Unit,
+    onStartVpnNow: () -> Unit,
+    onStopVpnNow: () -> Unit,
     onOpenIntent: (Intent) -> Unit,
     onOpenBatterySettings: () -> Unit,
     onOpenAutoStartSettings: () -> Unit,
@@ -87,7 +93,7 @@ fun MonitorScreen(
 
     // 二级折叠区块的展开状态：默认全部收起，标题行上的摘要足够看清状态。
     var permissionsExpanded by rememberSaveable { mutableStateOf(false) }
-    var clashExpanded by rememberSaveable { mutableStateOf(false) }
+    var vpnExpanded by rememberSaveable { mutableStateOf(false) }
     var catalogExpanded by rememberSaveable { mutableStateOf(false) }
     var showAppPicker by rememberSaveable { mutableStateOf(false) }
     val addAppLabel = stringResource(R.string.action_add_app)
@@ -138,27 +144,28 @@ fun MonitorScreen(
 
             item { LiveStatusCard(state = state) }
 
-            item(key = "clash") {
+            item(key = "vpn") {
+                val selectedEngine = state.engineSelected
                 CollapsibleCard(
-                    title = stringResource(R.string.clash_section),
-                    subtitle = if (state.clashInstalled) {
-                        stringResource(R.string.clash_installed)
-                    } else {
-                        stringResource(R.string.clash_not_installed)
-                    },
-                    subtitleColor = if (state.clashInstalled) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
+                    title = stringResource(R.string.vpn_section),
+                    subtitle = engineSummary(selectedEngine),
+                    subtitleColor = if (selectedEngine == null) {
                         MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
                     },
-                    expanded = clashExpanded,
-                    onToggleExpanded = { clashExpanded = !clashExpanded },
+                    expanded = vpnExpanded,
+                    onToggleExpanded = { vpnExpanded = !vpnExpanded },
                 ) {
-                    ClashSection(
+                    VpnSection(
                         state = state,
-                        autoStartClash = autoStartClash,
-                        onToggleClashAutoStart = onToggleClashAutoStart,
-                        onStartClashNow = onStartClashNow,
+                        autoStartVpn = autoStartVpn,
+                        autoStopVpn = autoStopVpn,
+                        onToggleAutoStart = onToggleVpnAutoStart,
+                        onToggleAutoStop = onToggleVpnAutoStop,
+                        onSelectEngine = onSelectVpnEngine,
+                        onStartNow = onStartVpnNow,
+                        onStopNow = onStopVpnNow,
                     )
                 }
             }
@@ -390,6 +397,14 @@ private fun LiveStatusCard(state: MonitorUiState) {
                 valueColor = pollHealthColor(state),
             )
             Spacer(modifier = Modifier.height(8.dp))
+            val vpnConnected = stringResource(R.string.vpn_connected)
+            val vpnDisconnected = stringResource(R.string.vpn_disconnected)
+            val vpnLabel = if (state.vpnActive) {
+                // 能读出归属就把是哪个客户端建的隧道一起写出来
+                listOfNotNull(vpnConnected, state.engineOwner?.displayName).joinToString(" · ")
+            } else {
+                vpnDisconnected
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = stringResource(R.string.label_vpn),
@@ -399,15 +414,7 @@ private fun LiveStatusCard(state: MonitorUiState) {
                 Spacer(modifier = Modifier.width(12.dp))
                 AssistChip(
                     onClick = {},
-                    label = {
-                        Text(
-                            text = if (state.vpnActive) {
-                                stringResource(R.string.vpn_connected)
-                            } else {
-                                stringResource(R.string.vpn_disconnected)
-                            },
-                        )
-                    },
+                    label = { Text(text = vpnLabel) },
                 )
             }
         }
@@ -457,36 +464,123 @@ private fun LabeledValue(label: String, value: String, valueColor: Color? = null
     }
 }
 
+/** 卡片标题行的摘要：选了哪个客户端 + 它的停止方向靠不靠谱。 */
 @Composable
-private fun ClashSection(
+private fun engineSummary(engine: VpnEngine?): String {
+    if (engine == null) return stringResource(R.string.vpn_engine_none)
+    return if (engine.stopReliable) {
+        engine.displayName
+    } else {
+        engine.displayName + " · " + stringResource(R.string.vpn_engine_stop_risky)
+    }
+}
+
+@Composable
+private fun VpnSection(
     state: MonitorUiState,
-    autoStartClash: Boolean,
-    onToggleClashAutoStart: (Boolean) -> Unit,
-    onStartClashNow: () -> Unit,
+    autoStartVpn: Boolean,
+    autoStopVpn: Boolean,
+    onToggleAutoStart: (Boolean) -> Unit,
+    onToggleAutoStop: (Boolean) -> Unit,
+    onSelectEngine: (VpnEngine) -> Unit,
+    onStartNow: () -> Unit,
+    onStopNow: () -> Unit,
 ) {
+    val selected = state.engineSelected
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
         Text(
-            text = stringResource(R.string.clash_profile_hint),
+            text = stringResource(R.string.vpn_hint),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(modifier = Modifier.height(12.dp))
-        ToggleRow(
-            title = stringResource(R.string.clash_auto_start),
-            description = stringResource(R.string.clash_auto_start_desc),
-            checked = autoStartClash,
-            onCheckedChange = onToggleClashAutoStart,
-            enabled = state.clashInstalled,
+        Text(
+            text = stringResource(R.string.vpn_engine_title),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
         )
-        if (state.clashInstalled) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                TextButton(onClick = onStartClashNow) {
-                    Text(text = stringResource(R.string.action_start_clash_now))
-                }
+        VpnEngine.entries.forEach { engine ->
+            EngineRow(
+                engine = engine,
+                installed = state.engineInstalled.contains(engine.id),
+                selected = selected == engine,
+                onSelect = { onSelectEngine(engine) },
+            )
+        }
+        // Clash Meta 的停止方向不可靠是它自己的限制（见 README「已知限制」），选中时如实说明
+        if (selected != null && !selected.stopReliable) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.vpn_clash_stop_warning),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        )
+        ToggleRow(
+            title = stringResource(R.string.vpn_auto_start),
+            description = stringResource(R.string.vpn_auto_start_desc),
+            checked = autoStartVpn,
+            onCheckedChange = onToggleAutoStart,
+            enabled = selected != null,
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        ToggleRow(
+            title = stringResource(R.string.vpn_auto_stop),
+            description = stringResource(R.string.vpn_auto_stop_desc),
+            checked = autoStopVpn,
+            onCheckedChange = onToggleAutoStop,
+            enabled = selected != null,
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = stringResource(R.string.vpn_profile_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onStartNow, enabled = selected != null) {
+                Text(text = stringResource(R.string.action_start_vpn_now))
             }
+            TextButton(onClick = onStopNow, enabled = selected != null) {
+                Text(text = stringResource(R.string.action_stop_vpn_now))
+            }
+        }
+    }
+}
+
+/** 一个可联动的客户端：装了才可选，选中即生效（服务下一轮轮询就会用上）。 */
+@Composable
+private fun EngineRow(
+    engine: VpnEngine,
+    installed: Boolean,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = installed) { onSelect() },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onSelect, enabled = installed)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = engine.displayName, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = if (installed) {
+                    engine.packageName
+                } else {
+                    stringResource(R.string.vpn_engine_not_installed)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -567,18 +661,23 @@ private fun HitRow(hit: DetectionHit) {
             modifier = Modifier.weight(1f),
         )
         // 「正在补连」是过程态，用中性色；连上了才是主题色；失败和「被系统拦掉」用错误色。
+        // 离开应用后自动断开的结果排在前面：它才是这条记录最新的状态。
         val (statusText, statusColor) = when {
+            hit.vpnStopped == true ->
+                stringResource(R.string.hit_vpn_stopped) to MaterialTheme.colorScheme.onSurfaceVariant
+            hit.vpnStopped == false ->
+                stringResource(R.string.hit_vpn_stop_failed) to MaterialTheme.colorScheme.error
             hit.vpnActive -> stringResource(R.string.vpn_connected) to MaterialTheme.colorScheme.primary
-            hit.clashVpnEstablished == true ->
-                stringResource(R.string.hit_clash_vpn_ok) to MaterialTheme.colorScheme.primary
-            hit.clashConnecting ->
-                stringResource(R.string.hit_clash_connecting) to MaterialTheme.colorScheme.onSurfaceVariant
-            hit.clashBlocked ->
-                stringResource(R.string.hit_clash_blocked) to MaterialTheme.colorScheme.error
-            hit.clashVpnEstablished == false ->
-                stringResource(R.string.hit_clash_vpn_failed) to MaterialTheme.colorScheme.error
-            hit.clashTriggered ->
-                stringResource(R.string.hit_clash_started) to MaterialTheme.colorScheme.onSurfaceVariant
+            hit.vpnEstablished == true ->
+                stringResource(R.string.hit_vpn_established) to MaterialTheme.colorScheme.primary
+            hit.vpnConnecting ->
+                stringResource(R.string.hit_vpn_connecting) to MaterialTheme.colorScheme.onSurfaceVariant
+            hit.vpnBlocked ->
+                stringResource(R.string.hit_vpn_blocked) to MaterialTheme.colorScheme.error
+            hit.vpnEstablished == false ->
+                stringResource(R.string.hit_vpn_failed) to MaterialTheme.colorScheme.error
+            hit.vpnTriggered ->
+                stringResource(R.string.hit_vpn_started) to MaterialTheme.colorScheme.onSurfaceVariant
             else -> stringResource(R.string.vpn_disconnected) to MaterialTheme.colorScheme.error
         }
         Text(
