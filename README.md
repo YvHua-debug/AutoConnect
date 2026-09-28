@@ -479,6 +479,33 @@ adb shell dumpsys connectivity | findstr "OwnerUid"
 
 Debug 构建带 `.debug` 后缀（`applicationIdSuffix`），可与正式包共存。
 
+### 签名与正式包
+
+`release` 构建类型的签名信息读根目录的 `keystore.properties`（已 gitignore）；文件不存在时不挂
+`signingConfig`，`assembleRelease` 照样能跑，只是产出装不上的 `app-release-unsigned.apk`：
+
+```properties
+storeFile=keystore/autoconnect-release.jks
+storePassword=…
+keyAlias=autoconnect
+keyPassword=…
+```
+
+```powershell
+# 生成一份（只做一次；丢了以后就没法再给同一个包名发升级包）
+keytool -genkeypair -v -keystore keystore/autoconnect-release.jks -alias autoconnect `
+  -keyalg RSA -keysize 2048 -validity 10000
+
+# 出正式包：app/build/outputs/apk/release/app-release.apk
+.\gradlew.bat :app:assembleRelease
+
+# 核对签名与版本号（apksigner 在 build-tools 里）
+apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+正式包的包名是 `com.example.composestarter`（没有 `.debug` 后缀），和 debug 包**是两个 App**，
+可以同时装在一台机器上。`keystore.properties` 与 `.jks` 都不要提交，两份都要自己备份。
+
 ### 手动验证某个客户端（Surfboard 需要一个配置文件）
 
 客户端里要先选中一个配置，`/start` 才能真的建隧道。Surfboard 上还没有配置时，可以用

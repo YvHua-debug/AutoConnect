@@ -18,6 +18,12 @@ captures/
 .cxx/
 output-metadata.json
 
+# 签名（绝不提交）
+keystore.properties
+keystore/
+*.jks
+*.keystore
+
 # Kotlin
 .kotlin/
 
