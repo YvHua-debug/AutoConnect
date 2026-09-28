@@ -12,7 +12,11 @@ import kotlinx.coroutines.flow.asStateFlow
 object SettingsStore {
 
     private const val PREFS_NAME = "monitor_settings"
-    private const val KEY_AUTO_START_CLASH = "auto_start_clash"
+    private const val KEY_AUTO_START_VPN = "auto_start_vpn"
+    /** v1.0 用的旧键名，只读一次做迁移，免得升级后把用户关掉的开关又打开。 */
+    private const val KEY_AUTO_START_VPN_LEGACY = "auto_start_clash"
+    private const val KEY_AUTO_STOP_VPN = "auto_stop_vpn"
+    private const val KEY_VPN_ENGINE = "vpn_engine"
     private const val KEY_SERVICE_ENABLED = "service_enabled"
     private const val KEY_CUSTOM_APPS = "custom_apps"
 
@@ -22,12 +26,20 @@ object SettingsStore {
 
     private var prefs: SharedPreferences? = null
 
-    private val _autoStartClash = MutableStateFlow(true)
+    private val _autoStartVpn = MutableStateFlow(true)
+    private val _autoStopVpn = MutableStateFlow(true)
+    private val _vpnEngine = MutableStateFlow("")
     private val _serviceEnabled = MutableStateFlow(true)
     private val _customApps = MutableStateFlow<List<VpnRequiredApp>>(emptyList())
 
-    /** 命中名单时是否自动拉起 Clash Meta 的 VPN。 */
-    val autoStartClash: StateFlow<Boolean> = _autoStartClash.asStateFlow()
+    /** 命中名单时是否自动拉起 VPN。 */
+    val autoStartVpn: StateFlow<Boolean> = _autoStartVpn.asStateFlow()
+
+    /** 离开名单应用后是否自动断开 VPN。 */
+    val autoStopVpn: StateFlow<Boolean> = _autoStopVpn.asStateFlow()
+
+    /** 用户选择的 VPN 客户端 id；空串表示「自动」（取第一个已安装的）。 */
+    val vpnEngine: StateFlow<String> = _vpnEngine.asStateFlow()
 
     /** 用户是否希望监控服务常驻。为 false 时看门狗不会把服务拉回来。 */
     val serviceEnabled: StateFlow<Boolean> = _serviceEnabled.asStateFlow()
@@ -39,14 +51,30 @@ object SettingsStore {
         if (prefs != null) return
         val store = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs = store
-        _autoStartClash.value = store.getBoolean(KEY_AUTO_START_CLASH, true)
+        _autoStartVpn.value = store.getBoolean(
+            KEY_AUTO_START_VPN,
+            store.getBoolean(KEY_AUTO_START_VPN_LEGACY, true),
+        )
+        _autoStopVpn.value = store.getBoolean(KEY_AUTO_STOP_VPN, true)
+        _vpnEngine.value = store.getString(KEY_VPN_ENGINE, "").orEmpty()
         _serviceEnabled.value = store.getBoolean(KEY_SERVICE_ENABLED, true)
         _customApps.value = decodeCustomApps(store.getString(KEY_CUSTOM_APPS, null))
     }
 
-    fun setAutoStartClash(enabled: Boolean) {
-        _autoStartClash.value = enabled
-        prefs?.edit()?.putBoolean(KEY_AUTO_START_CLASH, enabled)?.apply()
+    fun setAutoStartVpn(enabled: Boolean) {
+        _autoStartVpn.value = enabled
+        prefs?.edit()?.putBoolean(KEY_AUTO_START_VPN, enabled)?.apply()
+    }
+
+    fun setAutoStopVpn(enabled: Boolean) {
+        _autoStopVpn.value = enabled
+        prefs?.edit()?.putBoolean(KEY_AUTO_STOP_VPN, enabled)?.apply()
+    }
+
+    fun setVpnEngine(id: String) {
+        val normalized = VpnEngine.byId(id)?.id.orEmpty()
+        _vpnEngine.value = normalized
+        prefs?.edit()?.putString(KEY_VPN_ENGINE, normalized)?.apply()
     }
 
     fun setServiceEnabled(enabled: Boolean) {

@@ -199,7 +199,7 @@ object MonitorPermissions {
      * 「后台弹出界面」设置入口（小米 / Redmi / POCO）。
      *
      * Android 从后台启动 Activity 的限制在 MIUI 上被换成了自家的开关。没开这个开关时，
-     * 后台服务发出的 startActivity（例如拉起 Clash 的控制页）会被系统直接拒绝，日志表现为：
+     * 后台服务发出的 startActivity（例如拉起 VPN 客户端的控制页）会被系统直接拒绝，日志表现为：
      * `MIUILOG- Permission Denied Activity` 加 `Abort background activity starts`。
      * 注意：系统的「悬浮窗权限」已授权也没用，MIUI 这里必须单独允许。
      */

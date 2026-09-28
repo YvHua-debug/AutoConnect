@@ -1,8 +1,11 @@
 # Auto Connect
 
-自动连接助手：检测到需要代理的应用被打开时，后台静默拉起 Clash Meta 的 VPN。
+自动连接助手：检测到需要代理的应用被打开时，后台静默拉起 VPN（Clash Meta / FLClash / Surfboard），
+离开名单应用后再把 VPN 断开。
 
 Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保留构建必需的清单与资源。
+
+> 当前版本 **1.1**：v1.0 只支持 Clash Meta、且只能启动；1.1 适配三个客户端，并新增「离开名单自动断开」。
 
 ## 功能
 
@@ -23,8 +26,8 @@ Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保
      监控服务每轮只做一次轻量比对，名单没变就不会重复查 PackageManager
 
 3. **界面**
-   - 权限、Clash Meta 联动、监控名单都是可折叠的二级卡片，标题行直接显示状态摘要
-     （如「已授权 6/6」「Clash Meta 已安装」「25 个内置 · 2 个自定义」），默认收起
+   - 权限、VPN 联动、监控名单都是可折叠的二级卡片，标题行直接显示状态摘要
+     （如「已授权 6/6」「FLClash · 可启停」「25 个内置 · 2 个自定义」），默认收起
    - 权限卡片按机型列出全部项目：通用 4 项 + 小米机型特有的「自启动」「后台弹出界面」，
      每一项都显示真实状态（小米那两项通过 MIUI 自己的 appops 读，见「权限说明」）
    - 折叠状态用 `rememberSaveable` 保存，转屏 / 重建不会丢
@@ -37,22 +40,43 @@ Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保
 4. **VPN 连通性判断**
    - `ConnectivityManager` + `TRANSPORT_VPN` 判断当前是否有 VPN 生效
 
-5. **命中名单时自动拉起 Clash Meta 的 VPN（后台静默）**
-   - 命中名单且当前没有 VPN 时，`MonitorService` 通过 Clash Meta for Android 官方导出的外部控制入口
-     `com.github.kr328.clash.ExternalControlActivity` 发送 `ACTION_START_CLASH`
-   - 该 Activity 是透明主题 + `noHistory`，启动后立即结束，不会盖住用户当前界面
-   - 因为有 `SYSTEM_ALERT_WINDOW`（悬浮窗）权限，Android 10+ 允许本项目从后台启动该 Activity
+5. **命中名单时自动拉起 VPN（后台静默）**
+   - 三个客户端任选，走的是它们**自己对外导出**的控制入口（`data/VpnEngine.kt`）：
+
+     | 客户端 | 控制入口 | 启动 / 停止 |
+     |---|---|---|
+     | Clash Meta | `com.github.kr328.clash.ExternalControlActivity` | `ACTION_START_CLASH` / `ACTION_STOP_CLASH` |
+     | FLClash | `com.follow.clash.TempActivity` | `com.follow.clash.action.START` / `…STOP` |
+     | Surfboard | `com.getsurfboard.ui.activity.DeeplinkActivity` | `surfboard:///start` / `surfboard:///stop` |
+
+     这三个入口就是各客户端给自己的桌面快捷方式 / 快捷设置图块用的同一套接口（真机核对：点 FLClash、
+     Surfboard 的图块，执行的就是这里发出的那条指令）。目标 Activity 都是透明主题 + `noHistory`，
+     启动后立即结束，不会盖住用户当前界面；加上 `SYSTEM_ALERT_WINDOW`（悬浮窗）权限，
+     Android 10+ 允许本项目从后台启动它。
+   - 「VPN 联动」卡片列出设备上已装的客户端，点一下即切换；只装一个时什么都不用配
+     （不选就是「自动」，取第一个已安装的）
    - **以「回读到的真实 VPN 状态」为准，而不是发一条指令 + 6 秒后看一眼就完事**：
      只要名单应用还在前台、VPN 还没连上，就每 2 秒补发一次启动指令（最多 4 次，约前 10 秒），
      之后降成每分钟一次继续兜，连上了或用户离开名单应用才收尾。
-     命中记录和通知都按真实结果写：「正在自动连接 VPN…」→「已自动连接 VPN」/「Clash 没能建立 VPN」
+     命中记录和通知都按真实结果写：「正在自动连接 VPN…」→「已自动建立 VPN」/「没能建立 VPN」
    - 失败时会判断「是不是被系统拦掉了」（没有悬浮窗权限、或小米没开「后台弹出界面」），
-     是的话直接写明「后台拉起 Clash 被系统拦截，请开启后台弹出界面」
+     是的话直接写明「后台拉起 VPN 客户端被系统拦截，请开启后台弹出界面」
    - 用户停在名单应用里没动、VPN 被系统或别的 VPN 应用顶掉时也会自己补连回来
      （以前只在「切换前台应用」时判断一次，这种情况永远等不到第二次机会）
-   - 可在界面上关闭（「Clash Meta 联动」卡片），也可点「立即启动 VPN」手动验证
+   - 可在界面上关闭（「VPN 联动」卡片里的开关），也可点「立即启动 VPN」手动验证
 
-6. **常驻通知可以按需隐藏**
+6. **离开名单应用后自动断开 VPN**
+   - 离开名单应用先等 8 秒再动手：用户从 ChatGPT 点开一个链接、或只是下拉看一眼通知都会短暂离开
+     名单应用，这期间回到任意名单应用就取消，隧道不会被拆掉又立刻重建
+   - 断开同样**以回读到的状态收尾**：每 2 秒发一次停止指令，每个客户端最多 4 次，
+     回读到「VPN 未连接」才算成功；断不掉就把「断开失败」写进命中记录和通知，不谎报
+   - 「谁建的隧道」在部分 ROM 上读不到（实测 HyperOS 3 上 `NetworkCapabilities.getOwnerUid()`
+     返回 `-1`，详见「已知限制」），这时按「用户选中的 → 其余已安装的」依次尝试，
+     全都试完隧道还在才报失败；失败之后会收手，用户下次打开名单应用时再试，
+     不会每十几秒把几个客户端轮流点一遍
+   - 可在界面上关闭（「离开名单应用时自动断开 VPN」开关）
+
+7. **常驻通知可以按需隐藏**
    - 「监控服务」卡片里有一个「显示常驻通知」开关，它显示的是**系统里那条通知通道的真实状态**
    - 点开关会跳到系统设置里「Auto Connect 状态」这一条通道的设置页，在那里关掉「允许通知」
      即可：通知栏不再显示「正在监控前台应用」，前台服务照常运行（`startForeground` 照发，
@@ -67,7 +91,7 @@ Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保
 | 权限 | 用途 | 授予方式 |
 |---|---|---|
 | `PACKAGE_USAGE_STATS` | 读取前台应用，**核心权限** | 特殊权限，须在系统设置中手动开启（应用内提供跳转） |
-| `SYSTEM_ALERT_WINDOW` | Android 10+ 后台启动 Activity，用于开机后自动回到前台 | 特殊权限，应用内提供跳转 |
+| `SYSTEM_ALERT_WINDOW` | Android 10+ 后台启动 Activity：开机后自动回到前台、后台拉起 VPN 客户端 | 特殊权限，应用内提供跳转 |
 | `POST_NOTIFICATIONS` | 命中名单时推送提醒 | Android 13+ 运行时申请 |
 | `RECEIVE_BOOT_COMPLETED` | 开机自启 | 安装即授予 |
 | `FOREGROUND_SERVICE` / `_SPECIAL_USE` | 常驻前台服务 | 安装即授予 |
@@ -91,7 +115,7 @@ adb shell pm grant com.example.composestarter.debug android.permission.POST_NOTI
 | 界面上的开关 | MIUI appop | 验证方式 |
 |---|---|---|
 | 自启动 / 后台运行 | `10008` | `10008=allow` 的第三方应用（微信、QQ、欢律、小米运动健康）与「自启动管理」页里「允许」的那几个完全一致 |
-| 后台弹出界面 | `10021` | 置成 `ignore` 后后台 `startActivity` 立刻被拦（logcat：`Abort background activity starts from <uid>`）；置回 `allow` 后同一路径恢复正常，Clash 被拉起且 VPN 真的连上 |
+| 后台弹出界面 | `10021` | 置成 `ignore` 后后台 `startActivity` 立刻被拦（logcat：`Abort background activity starts from <uid>`）；置回 `allow` 后同一路径恢复正常，客户端被拉起且 VPN 真的连上 |
 
 应用里读这两项走的是反射（`getOpsForPackage` / `checkOpNoThrow(int, …)` 都是隐藏 API，
 公开的那几个只认 op 名字），查不到时界面显示「去设置」而不是谎报「未开启」。
@@ -113,35 +137,48 @@ adb shell appops set com.example.composestarter.debug 10021 ignore   # 关后台
 - 前台检测依赖系统 `UsageStatsManager`，采样间隔空闲 2 秒 / 名单应用在前台 5 秒，
   打开名单应用后最多 2 秒才会被发现；极短时间的切换可能漏记
 - 息屏时轮询间隔放宽到 30 秒，所以息屏状态下切换应用最多要 30 秒才会被发现
-- **Clash Meta 里必须先选中一个配置（Profile），自动启动才能建立隧道。**
-  没有配置时 Clash 会被正常拉起，但不会建立 VPN，本项目只能通过「VPN 是否连上」间接发现这一点
-- **`START_CLASH` 在 Clash 内核已经跑着的时候是空操作。** Clash 源码里这个 action 只是
-  `if (isClashRunning()) 提示已启动 else startClash()`，而 `isClashRunning()` 看的是
-  「内核服务在不在跑」，不是「隧道建没建起来」。所以「内核活着、隧道没连」这种状态下
-  单发一条指令什么都不会发生——这是以前会稳定卡在「Clash 已拉起 · VPN 未连接」的原因之一，
-  现在靠「没连上就补发」覆盖掉。
+- **客户端里必须先选中一个配置，自动启动才能建立隧道。** Clash Meta 选 Profile、FLClash 选配置、
+  Surfboard 选配置文件；没有配置时客户端会被正常拉起，但不会建立 VPN，
+  本项目只能通过「VPN 是否连上」间接发现这一点
+- **「启动」指令在客户端的内核已经跑着的时候可能是空操作。** Clash Meta 源码里 `ACTION_START_CLASH`
+  只是 `if (isClashRunning()) 提示已启动 else startClash()`，而 `isClashRunning()` 看的是
+  「内核服务在不在跑」，不是「隧道建没建起来」；所以「内核活着、隧道没连」这种状态下
+  单发一条指令什么都不会发生——这是以前会稳定卡在「已拉起 · VPN 未连接」的原因之一，
+  现在靠「没连上就补发」覆盖掉（这条是 Clash Meta 的实现细节，另外两个客户端没有实测到，
+  但补发机制对三家一视同仁）
 - **后台 `startActivity` 可能被系统静默拦掉，应用侧拿不到任何错误。**
   实测（HyperOS 3 / Android 16，2026-09-21）：把本应用的 MIUI appop `10021`（「后台弹出界面」）
-  置成 `ignore` 后，日志里是 `Abort background activity starts from <uid>`、Clash 根本没被拉起，
-  但 `startActivity` 正常返回——以前据此写下的「已拉起 Clash」是假结论，而且只发一次，
+  置成 `ignore` 后，日志里是 `Abort background activity starts from <uid>`、客户端根本没被拉起，
+  但 `startActivity` 正常返回——以前据此写下的「已拉起客户端」是假结论，而且只发一次，
   用户不切走就再也不会重试（实测：拦截状态下停在名单应用里 60 秒，一条指令都不会再发）。
   现在补发 4 次仍连不上就会把「被系统拦截」明确写进命中记录和通知；
   用户把权限打开后，慢速重试会自己把 VPN 连上（实测：打开权限后第 5 次重试连上）。
 - 首次启用 VPN 时，Android 必定弹出一次系统 VPN 授权框（`VpnService.prepare`），
   授权一次后不再出现，这一步无法绕过
-- **本应用只负责启动 VPN，不提供「停止」。** 停止方向能用的入口只有 Clash 官方导出的
-  `com.github.kr328.clash.ExternalControlActivity` 加上停止动作（桌面长按 Clash 图标时那个
-  「停止 Clash」快捷方式用的也是它，`dumpsys shortcut` 验证过），而它真机实测**时灵时不灵**：
-  Clash 进程处于后台冻结（cached）状态时冷启动单发经常无效，连发几次、或 Clash 界面刚打开过
-  （进程活跃）时才断得掉（HyperOS 3 / Android 16，2026-09-20：冷启动单发 0/2 成功；
-  短暂预热后 4/4 成功）。做成按钮等于给用户一个不知道什么时候生效的开关，所以整条链路都删掉了，
-  要断开隧道请在 Clash 里手动操作。另外两条路也验证过不可行：`am kill` /
-  `killBackgroundProcesses` 杀不掉 Clash（它是前台服务级别，系统不允许第三方应用清理）；
-  Clash 的快捷设置图块（`com.github.kr328.clash.TileService`）只有系统能触发，
-  第三方应用没有「替用户点一下图块」的 API。
+- **Clash Meta 的停止入口冷启动时经常失效，这是它自己的实现问题。** 停止方向它也用官方导出的
+  `com.github.kr328.clash.ExternalControlActivity`（桌面长按 Clash 图标时那个「停止 Clash」
+  快捷方式用的也是它，`dumpsys shortcut` 验证过），但它内部走的是**自己进程里的私有广播**
+  （`ACTION_CLASH_REQUEST_STOP`，动态注册、带 `com.github.metacubex.clash.meta.permission.RECEIVE_BROADCASTS`
+  权限）：冷启动（`force-stop` 之后）实测单发 0/3、连发 6 次也无效，
+  `BroadcastQueue` 显示广播 1ms 就投递了（不是 MIUI 延迟），只有它的界面被打开过一次
+  （进程活跃）之后才收得到。2026-09-28 在 1.1 上复测：冷启动时按
+  「Clash Meta → FLClash → Surfboard」全试一遍，隧道照样在；把 Clash Meta 的界面打开一次再试，
+  第 1 次就断开了。**FLClash 和 Surfboard 没有这个问题**（真机冷启动 3/3 一次成功），
+  想要稳定的自动断开，建议把「VPN 客户端」选成它们。
+- **系统那枚 VPN 图块（控制中心）没法被应用「点一下」。** 用户提过的思路是用控制中心的 VPN
+  按钮来断开：那枚图块由 `com.android.systemui` 的 `VpnTileService` 提供，第三方应用既没有
+  「替用户点图块」的 API，`cmd statusbar click-tile <组件>` 也只认自己声明的 `TileService`。
+  所以最终走的是各客户端自己导出的控制入口（见「功能」第 5 条）——不依赖系统 UI，也不需要任何
+  特殊权限。`am kill` / `killBackgroundProcesses` 也验证过不行：它们是前台服务级别，
+  系统不允许第三方应用清理
 - **应用进程读不到 VPN 的隧道网卡。** 曾经试过用「`NetworkInterface` 里有没有 `tun0`」
   来判断 VPN 是否连接，结果在真机上必然误报成「未连接」（tun0 明明存在，应用侧遍历不到），
   所以 VPN 状态只能走 `ConnectivityManager`，别做这种「优化」。
+- **隧道归属（谁建的隧道）在部分 ROM 上读不到。** `dumpsys connectivity` 里能看到
+  `OwnerUid: 10393`，但应用侧拿到的 `NetworkCapabilities.getOwnerUid()` 是 **-1**
+  （实测 HyperOS 3 / Android 17，2026-09-28：这个字段只对特权调用方填）。自动断开因此
+  不依赖它：归属排在最前，认不出来就按「用户选中的 → 其余已安装的」依次尝试，
+  真实依据始终是「回读到的 VPN 状态」
 - **应用自己关不掉前台服务的通知，只能由用户在系统设置里关。**
   前台服务必须持有一条通知，而应用没法把它「发出去但谁都不显示」：曾经准备了一条
   `IMPORTANCE_NONE` 的通道，把前台通知挂过去，看起来能隐藏——但那是**假象**。
@@ -163,12 +200,13 @@ adb shell appops set com.example.composestarter.debug 10021 ignore   # 关后台
 
 | 优化项 | 改动前 | 改动后 |
 |---|---|---|
-| 轮询间隔 | 固定 1 秒 | 空闲 2 秒；名单应用在前台时 5 秒；补连 VPN 期间 2 秒 |
+| 轮询间隔 | 固定 1 秒 | 空闲 2 秒；名单应用在前台时 5 秒；补连 VPN / 正在断开期间 2 秒 |
 | 前台应用查询窗口 | 每轮都回看 30 分钟内的全部事件 | 首次回看 30 分钟，之后只查「距上次查询 1 秒」的增量窗口，与上一次结果合并 |
 | 息屏期间 | 照常每秒轮询 | 间隔放宽到 30 秒（只拉长、不停止） |
-| VPN 状态查询 | 每轮都问 `ConnectivityManager` | 5 秒一次；名单应用在前台或正在补连 VPN 时立即回读 |
+| VPN 状态查询 | 每轮都问 `ConnectivityManager` | 5 秒一次；名单应用在前台、正在补连或正在断开时立即回读 |
 | 应用名查询 | 每轮都查 `PackageManager` + `loadLabel` | 只在前台应用变化时查，且带缓存 |
 | 已安装应用枚举 | 每次启动枚举全机应用（几百个 `PackageInfo`） | 只查名单里的包（内置 25 + 自定义），且只在名单变化时重查 |
+| VPN 客户端安装状态 | 每轮都查 `PackageManager` | 60 秒一次；用户在界面上改了选择则立即重查 |
 | 自定义名单比对 | — | 每轮只做一次列表相等判断（几个元素的 `List.equals`），不碰 `PackageManager` |
 | 通知刷新 | 文案相同时也会 `notify()` | 文案没变就不推送 |
 
@@ -209,7 +247,7 @@ D/MiSensorServiceImpl: PowerKeeperSensor stop iUid=<uid> but app has Controlled
 |---|---|---|
 | 省电策略 → **无限制** | 设置 → 应用设置 → 应用管理 → Auto Connect → 省电策略 | 阻止 PowerKeeper 冻结进程，**最关键** |
 | **自启动** → 打开 | 设置 → 应用设置 → 应用管理 → Auto Connect → 自启动 | 允许开机 / 被系统拉起 |
-| **后台弹出界面** → 允许 | 应用信息 → 权限管理 → 后台弹出界面 | 命中名单时才能静默拉起 Clash |
+| **后台弹出界面** → 允许 | 应用信息 → 权限管理 → 后台弹出界面 | 命中名单时才能静默拉起 VPN 客户端 |
 
 另外建议：
 
@@ -222,7 +260,7 @@ D/MiSensorServiceImpl: PowerKeeperSensor stop iUid=<uid> but app has Controlled
 
 ### 第二个坑：「后台弹出界面」没开会静默失败
 
-`省电策略 = 无限制` 只解决「检测不到」。命中之后还要在后台拉起 Clash 的控制页，
+`省电策略 = 无限制` 只解决「检测不到」。命中之后还要在后台拉起 VPN 客户端的控制页，
 如果「后台弹出界面」是关闭的，MIUI 会直接拒绝这次启动，而且**不会抛异常**：
 
 ```
@@ -230,7 +268,7 @@ D/ActivityStarterImpl: MIUILOG- Permission Denied Activity : Intent { act=...act
 E/ActivityTaskManager: Abort background activity starts from <uid>
 ```
 
-表现：通知栏停在「打开 ChatGPT · Clash 已拉起但 VPN 未建立」，Clash 进程根本没起来。
+表现：通知栏停在「打开 ChatGPT · 客户端已拉起但 VPN 未建立」，客户端进程根本没起来。
 在 MIUI 上，Android 的「悬浮窗权限」已经授权也**不能**替代这个开关，必须单独允许。
 
 开启路径：应用信息 → 权限管理 → **其他权限** → 后台弹出界面 → **始终允许**
@@ -314,12 +352,13 @@ app/src/main/
 │   │   ├── SettingsStore.kt     轻量设置存储（SharedPreferences + StateFlow）
 │   │   ├── VpnRequiredApp.kt    名单条目模型
 │   │   ├── VpnAppCatalog.kt     需要 VPN 的应用名单（扩展点）
+│   │   ├── VpnEngine.kt       三个 VPN 客户端的外部控制入口（扩展点）
 │   │   ├── AppRepository.kt     查询已安装应用与名称
 │   │   └── InstalledApps.kt     枚举带桌面图标的应用（供「＋」选择器使用）
 │   ├── monitor/
 │   │   ├── ForegroundAppDetector.kt  前台应用 / VPN 状态检测
 │   │   ├── MonitorService.kt         常驻前台服务与轮询逻辑
-│   │   ├── ClashController.kt        通过外部控制入口启动 Clash Meta
+│   │   ├── VpnController.kt          按客户端启停 VPN（入口定义见 data/VpnEngine.kt）
 │   │   ├── BootReceiver.kt           开机自启
 │   │   ├── MonitorPermissions.kt     权限检查与设置页跳转
 │   │   └── MonitorRepository.kt      进程内共享状态（StateFlow）
@@ -407,16 +446,45 @@ adb shell am start -n com.example.composestarter.debug/com.example.composestarte
 adb shell appops set com.example.composestarter.debug android:get_usage_stats allow
 adb shell appops set com.example.composestarter.debug SYSTEM_ALERT_WINDOW allow
 
-# 手动触发一次 Clash Meta 的 VPN 启动（等价于点界面上的「立即启动 VPN」）
+# 手动启动 VPN（等价于点界面上的「立即启动 VPN」，换成当前选中的那个客户端）
 adb shell am start -a com.github.metacubex.clash.meta.action.START_CLASH `
   -n com.github.metacubex.clash.meta/com.github.kr328.clash.ExternalControlActivity
+adb shell am start -a com.follow.clash.action.START -n com.follow.clash/com.follow.clash.TempActivity
+adb shell am start -a android.intent.action.VIEW -d "surfboard:///start" `
+  -n com.getsurfboard/.ui.activity.DeeplinkActivity
+
+# 手动停止 VPN（START_CLASH → STOP_CLASH、action.START → action.STOP、start → stop）
+adb shell am start -a com.github.metacubex.clash.meta.action.STOP_CLASH `
+  -n com.github.metacubex.clash.meta/com.github.kr328.clash.ExternalControlActivity
+adb shell am start -a com.follow.clash.action.STOP -n com.follow.clash/com.follow.clash.TempActivity
+adb shell am start -a android.intent.action.VIEW -d "surfboard:///stop" `
+  -n com.getsurfboard/.ui.activity.DeeplinkActivity
 
 # 查看 VPN 是否真的建立（Transports: VPN 即已生效）
 adb shell dumpsys connectivity | findstr "VPN"
+# 看隧道归属：dumpsys 里能看到 OwnerUid，应用侧读不到（见「已知限制」）
+adb shell dumpsys connectivity | findstr "OwnerUid"
 
 ```
 
 Debug 构建带 `.debug` 后缀（`applicationIdSuffix`），可与正式包共存。
+
+### 手动验证某个客户端（Surfboard 需要一个配置文件）
+
+客户端里要先选中一个配置，`/start` 才能真的建隧道。Surfboard 上还没有配置时，可以用
+`tools/surfboard-test-profile.conf`：**规则只有一条 DIRECT，不连任何服务器，不碰你的机场订阅**。
+
+```powershell
+# 仓库里带一份直连配置；起个本地 HTTP 服务再用 deeplink 导入（手机端用 adb reverse 指回来）
+python -m http.server 8731 --directory tools
+adb reverse tcp:8731 tcp:8731
+adb shell am start -a android.intent.action.VIEW \
+  -d "surfboard:///install-config?url=http%3A%2F%2F127.0.0.1%3A8731%2Fsurfboard-test-profile.conf" \
+  -n com.getsurfboard/.ui.activity.DeeplinkActivity
+```
+
+导入后它在 Surfboard 里叫 `surfboard-test-profile`（名字取自文件名）：选中它就能验证「启动 / 停止」整条链路，
+但不代理任何流量（规则全是 DIRECT）；验证完直接删掉这个配置即可。
 
 ## 网络说明
 
@@ -431,8 +499,9 @@ Debug 构建带 `.debug` 后缀（`applicationIdSuffix`），可与正式包共�
 ## 后续扩展建议
 
 - 把命中记录落库（Room），支持按天统计与导出
-- 命中时提供悬浮窗提醒，或联动 Clash Meta 自动切换节点 / 切换 Profile
-- 离开名单应用且长时间无命中时自动关掉 Clash 省电（前提是先找到可靠的停止方式，见「已知限制」）
+- 命中时提供悬浮窗提醒，或联动客户端自动切换节点 / 切换配置
+- 断开前给一个「还要再用 5 分钟」的延后按钮，而不是到点就断
+- 支持更多客户端（v2rayNG、NekoBox 等）：`data/VpnEngine.kt` 里加一条枚举即可
 - 加入 `navigation-compose` 做页面路由
 - 按 feature 分模块（`:feature:xxx` / `:core:xxx`）拆分多模块结构
 - 引入 Hilt 做依赖注入

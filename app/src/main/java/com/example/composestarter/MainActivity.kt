@@ -15,10 +15,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.example.composestarter.data.SettingsStore
-import com.example.composestarter.monitor.ClashController
+import com.example.composestarter.data.VpnEngine
 import com.example.composestarter.monitor.MonitorPermissions
 import com.example.composestarter.monitor.MonitorRepository
 import com.example.composestarter.monitor.MonitorService
+import com.example.composestarter.monitor.VpnController
 import com.example.composestarter.monitor.Watchdog
 import com.example.composestarter.ui.MonitorScreen
 import com.example.composestarter.ui.theme.ComposeStarterTheme
@@ -50,12 +51,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             ComposeStarterTheme {
                 val state by MonitorRepository.state.collectAsState()
-                val autoStartClash by SettingsStore.autoStartClash.collectAsState()
+                val autoStartVpn by SettingsStore.autoStartVpn.collectAsState()
+                val autoStopVpn by SettingsStore.autoStopVpn.collectAsState()
                 val customApps by SettingsStore.customApps.collectAsState()
                 MonitorScreen(
                     state = state,
                     permissions = permissions,
-                    autoStartClash = autoStartClash,
+                    autoStartVpn = autoStartVpn,
+                    autoStopVpn = autoStopVpn,
                     customApps = customApps,
                     showStatusNotification = permissions.statusNotificationVisible,
                     onToggleService = { enabled ->
@@ -68,14 +71,17 @@ class MainActivity : ComponentActivity() {
                             Watchdog.cancel(this)
                         }
                     },
-                    onToggleClashAutoStart = { enabled -> SettingsStore.setAutoStartClash(enabled) },
+                    onToggleVpnAutoStart = { enabled -> SettingsStore.setAutoStartVpn(enabled) },
+                    onToggleVpnAutoStop = { enabled -> SettingsStore.setAutoStopVpn(enabled) },
+                    onSelectVpnEngine = { engine -> SettingsStore.setVpnEngine(engine.id) },
                     onToggleShowStatusNotification = {
                         // 应用没法自己隐藏前台服务的通知，只能把用户送到系统里那条通道的设置页
                         runCatching {
                             startActivity(MonitorPermissions.statusChannelSettingsIntent(this))
                         }
                     },
-                    onStartClashNow = { startClashNow() },
+                    onStartVpnNow = { controlVpnNow(start = true) },
+                    onStopVpnNow = { controlVpnNow(start = false) },
                     onOpenIntent = { intent -> runCatching { startActivity(intent) } },
                     onOpenBatterySettings = {
                         runCatching { startActivity(MonitorPermissions.batterySettingsIntent(this)) }
@@ -126,7 +132,12 @@ class MainActivity : ComponentActivity() {
                 null
             },
         )
-        MonitorRepository.setClashInstalled(ClashController(this).isInstalled())
+        val controller = VpnController(this)
+        val installed = controller.installedEngines()
+        MonitorRepository.setEngines(
+            installed = installed,
+            selected = VpnEngine.effective(SettingsStore.vpnEngine.value, installed),
+        )
     }
 
     private fun autoStartMonitoring() {
@@ -135,12 +146,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 手动触发一次 Clash Meta 的 VPN 启动，方便在没有命中名单时验证联动是否可用。 */
-    private fun startClashNow() {
-        val sent = ClashController(this).start()
+    /**
+     * 手动启停一次 VPN，方便在没有命中名单时验证联动是否可用。
+     *
+     * 用的一定是「当前生效的那个客户端」，和自动联动走同一条路径，所以这里能用就说明联动能用。
+     */
+    private fun controlVpnNow(start: Boolean) {
+        val controller = VpnController(this)
+        val installed = controller.installedEngines()
+        val engine = VpnEngine.effective(SettingsStore.vpnEngine.value, installed)
+        if (engine == null) {
+            Toast.makeText(this, R.string.vpn_start_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val sent = if (start) controller.start(engine) else controller.stop(engine)
         Toast.makeText(
             this,
-            if (sent) R.string.clash_start_sent else R.string.clash_start_failed,
+            when {
+                sent && start -> R.string.vpn_start_sent
+                sent -> R.string.vpn_stop_sent
+                start -> R.string.vpn_start_failed
+                else -> R.string.vpn_stop_failed
+            },
             Toast.LENGTH_SHORT,
         ).show()
     }
