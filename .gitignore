@@ -33,3 +33,5 @@ Thumbs.db
 
 # 本地验证产物（截图等）
 .artifacts/
+tools/diagnostics/*.log
+tools/diagnostics/*.png

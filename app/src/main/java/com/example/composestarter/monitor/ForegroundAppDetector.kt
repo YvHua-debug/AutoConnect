@@ -21,7 +21,7 @@ class ForegroundAppDetector(private val context: Context) {
     private val event = UsageEvents.Event()
 
     /** 上一次查到的前台包名与查询结束时间，用于做增量查询。 */
-    private var lastForegroundPackage: String? = null
+    private var tracker = ForegroundTracker()
     private var lastQueryEnd = 0L
 
     /** 是否已获得「使用情况访问权限」。 */
@@ -47,10 +47,8 @@ class ForegroundAppDetector(private val context: Context) {
     /**
      * 返回最近切到前台的应用包名，取不到时返回 null。
      *
-     * 只有第一次（或 [reset] 之后）才回看 [FULL_LOOK_BACK_MS]；
-     * 之后每轮只查「上一次查询结束时间往前 [QUERY_OVERLAP_MS]」到现在的增量窗口，
-     * 再和上一次的结果取较新的那个。窗口首尾相接不会漏事件，
-     * 但每轮要遍历的事件从几百上千条降到个位数，这是后台占用最大的一处优化。
+     * 首次回看一天；之后从上次查询位置继续，重叠十秒覆盖事件的延迟写入。
+     * 即使进程被冻结数分钟，也不能截掉中间的应用切换事件。
      *
      * 用户长时间停在同一个应用上不会产生新的切前台事件，
      * 这种情况下返回的就是上一次缓存的结果。
@@ -58,29 +56,19 @@ class ForegroundAppDetector(private val context: Context) {
     fun currentForegroundPackage(): String? {
         val usageStatsManager = context.getSystemService(UsageStatsManager::class.java) ?: return null
         val now = System.currentTimeMillis()
-        val start = if (lastForegroundPackage == null || lastQueryEnd == 0L) {
-            now - FULL_LOOK_BACK_MS
-        } else {
-            maxOf(lastQueryEnd - QUERY_OVERLAP_MS, now - MAX_INCREMENTAL_WINDOW_MS)
-        }
+        if (now < lastQueryEnd) tracker = ForegroundTracker()
+        val start = ForegroundTracker.queryStart(lastQueryEnd, now)
 
-        val events = usageStatsManager.queryEvents(start, now) ?: return lastForegroundPackage
+        val events = usageStatsManager.queryEvents(start, now) ?: return tracker.packageName
         lastQueryEnd = now
 
-        var latest = lastForegroundPackage
-        var latestAt = 0L
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
-            if (event.eventType == resumedEventType && event.timeStamp >= latestAt) {
-                val packageName = event.packageName
-                if (packageName != null) {
-                    latestAt = event.timeStamp
-                    latest = packageName
-                }
+            if (event.eventType == resumedEventType || event.eventType == pausedEventType) {
+                tracker.accept(event.packageName, event.className, event.timeStamp, event.eventType == resumedEventType)
             }
         }
-        lastForegroundPackage = latest
-        return latest
+        return tracker.packageName
     }
 
     /**
@@ -99,6 +87,12 @@ class ForegroundAppDetector(private val context: Context) {
     }.getOrDefault(false)
 
     private companion object {
+        val pausedEventType: Int = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            UsageEvents.Event.ACTIVITY_PAUSED
+        } else {
+            @Suppress("DEPRECATION")
+            UsageEvents.Event.MOVE_TO_BACKGROUND
+        }
         /** ACTIVITY_RESUMED 与已废弃的 MOVE_TO_FOREGROUND 取值相同（均为 1）。 */
         val resumedEventType: Int = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             UsageEvents.Event.ACTIVITY_RESUMED
@@ -107,13 +101,5 @@ class ForegroundAppDetector(private val context: Context) {
             UsageEvents.Event.MOVE_TO_FOREGROUND
         }
 
-        /** 首次查询（以及 reset 之后）的回看窗口，要够长才能覆盖「一直停在同一个应用」的情况。 */
-        const val FULL_LOOK_BACK_MS = 30 * 60 * 1000L
-
-        /** 增量查询时往前多取一点，保证相邻两轮窗口首尾相接。 */
-        const val QUERY_OVERLAP_MS = 1_000L
-
-        /** 增量窗口上限，防止长时间没查询时一次性拉回大量事件。 */
-        const val MAX_INCREMENTAL_WINDOW_MS = 60_000L
     }
 }

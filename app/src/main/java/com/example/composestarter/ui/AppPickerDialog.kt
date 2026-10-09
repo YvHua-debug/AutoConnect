@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -41,6 +42,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.composestarter.R
 import com.example.composestarter.data.InstalledApp
 import com.example.composestarter.data.listLaunchableApps
+import com.example.composestarter.data.loadAppIcon
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -55,7 +57,7 @@ fun AppPickerDialog(
     onPick: (InstalledApp) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val context = LocalContext.current
+    val context = LocalContext.current.applicationContext
     var query by rememberSaveable { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
     var apps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
@@ -156,7 +158,7 @@ private fun AppPickerRow(app: InstalledApp, onClick: () -> Unit) {
             .padding(horizontal = 24.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AppIcon(icon = app.icon)
+        AppIcon(packageName = app.packageName)
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(text = app.label, style = MaterialTheme.typography.bodyLarge)
@@ -169,9 +171,13 @@ private fun AppPickerRow(app: InstalledApp, onClick: () -> Unit) {
     }
 }
 
-/** 应用图标已经在 [listLaunchableApps] 里缩放到固定尺寸，这里只负责画出来。 */
+/** 只为 LazyColumn 当前组合的行加载图标，行离开组合后即可释放。 */
 @Composable
-private fun AppIcon(icon: Bitmap?) {
+private fun AppIcon(packageName: String) {
+    val context = LocalContext.current.applicationContext
+    val icon by produceState<Bitmap?>(initialValue = null, key1 = context, key2 = packageName) {
+        value = withContext(Dispatchers.IO) { loadAppIcon(context, packageName) }
+    }
     val imageBitmap = remember(icon) { icon?.asImageBitmap() }
     if (imageBitmap == null) {
         Spacer(

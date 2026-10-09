@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
-import java.util.concurrent.ConcurrentHashMap
+import android.util.LruCache
 
 /**
  * 查询设备上已安装的应用，用于判断名单中的应用是否存在。
@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 class AppRepository(private val context: Context) {
 
     /** 应用显示名缓存：桌面名称几乎不变，没必要每次切换前台应用都去问 PackageManager。 */
-    private val labelCache = ConcurrentHashMap<String, String>()
+    private val labelCache = LruCache<String, String>(64)
 
     /**
      * 名单里哪些包已经装了。
@@ -28,8 +28,11 @@ class AppRepository(private val context: Context) {
     }.getOrDefault(false)
 
     /** 读取应用在桌面上显示的名称，取不到时返回包名。 */
-    fun labelOf(packageName: String): String = labelCache.getOrPut(packageName) {
-        packageInfo(packageName)?.loadLabel(context.packageManager)?.toString() ?: packageName
+    fun labelOf(packageName: String): String {
+        labelCache.get(packageName)?.let { return it }
+        val label = packageInfo(packageName)?.loadLabel(context.packageManager)?.toString() ?: packageName
+        labelCache.put(packageName, label)
+        return label
     }
 
     private fun packageInfo(packageName: String): ApplicationInfo? = try {

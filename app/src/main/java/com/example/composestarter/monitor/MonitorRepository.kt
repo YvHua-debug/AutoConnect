@@ -54,7 +54,7 @@ data class MonitorUiState(
  */
 object MonitorRepository {
 
-    private const val MAX_HITS = 50
+    internal const val MAX_HITS = 50
 
     private val hitIds = AtomicLong(0L)
 
@@ -63,9 +63,13 @@ object MonitorRepository {
 
     fun nextHitId(): Long = hitIds.incrementAndGet()
 
-    fun setServiceRunning(running: Boolean) = _state.update { it.copy(serviceRunning = running) }
+    fun setServiceRunning(running: Boolean) = _state.update {
+        if (it.serviceRunning == running) it else it.copy(serviceRunning = running)
+    }
 
-    fun setVpnActive(active: Boolean) = _state.update { it.copy(vpnActive = active) }
+    fun setVpnActive(active: Boolean) = _state.update {
+        if (it.vpnActive == active) it else it.copy(vpnActive = active)
+    }
 
     /** 每完成一轮轮询上报一次，界面据此显示「后台是否还活着」。 */
     fun onPoll(at: Long, gapMs: Long) = _state.update {
@@ -83,7 +87,9 @@ object MonitorRepository {
         it.copy(engineInstalled = installed.map(VpnEngine::id).toSet(), engineSelected = selected)
     }
 
-    fun setEngineOwner(engine: VpnEngine?) = _state.update { it.copy(engineOwner = engine) }
+    fun setEngineOwner(engine: VpnEngine?) = _state.update {
+        if (it.engineOwner == engine) it else it.copy(engineOwner = engine)
+    }
 
     fun onForegroundChanged(packageName: String?, label: String?) = _state.update {
         if (it.foregroundPackage == packageName) {

@@ -4,9 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.KeyguardManager
 import android.app.Service
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -29,7 +32,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -49,6 +53,10 @@ class MonitorService : Service() {
     private val powerManager: PowerManager? by lazy {
         getSystemService(PowerManager::class.java)
     }
+    private val keyguardManager: KeyguardManager? by lazy {
+        getSystemService(KeyguardManager::class.java)
+    }
+    private var controlsAvailable = true
 
     /** 轮询循环。持有一份引用，万一它异常退出还能重新拉起来。 */
     private var monitorJob: Job? = null
@@ -107,12 +115,51 @@ class MonitorService : Service() {
     /** 上一轮轮询的时间，用来统计「被系统冻结」造成的空档。 */
     private var previousPollAt = 0L
 
+    private val pollWakeups = Channel<Unit>(Channel.CONFLATED)
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            pollWakeups.trySend(Unit)
+        }
+    }
+    private val sessionPrefs by lazy { getSharedPreferences("vpn_session", Context.MODE_PRIVATE) }
+
+    private fun disarmSession() {
+        listedArmed = false
+        leftListedAt = 0L
+        if (sessionPrefs.contains("package")) sessionPrefs.edit().clear().commit()
+    }
+
+    private fun rememberSession(entry: VpnRequiredApp) {
+        listedArmed = true
+        lastListedPackage = entry.packageName
+        lastListedName = entry.displayName
+        if (sessionPrefs.getString("package", null) != entry.packageName) {
+            // 只在名单应用切换时同步落盘，避免进程被杀后遗失待断开的会话。
+            sessionPrefs.edit().putString("package", entry.packageName)
+                .putString("name", entry.displayName).commit()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         SettingsStore.attach(applicationContext)
         detector = ForegroundAppDetector(this)
         appRepository = AppRepository(this)
         vpnController = VpnController(this)
+        lastListedPackage = sessionPrefs.getString("package", null)
+        lastListedName = sessionPrefs.getString("name", null)
+        listedArmed = lastListedPackage != null
+        if (listedArmed) Log.i(TAG, "恢复待断开会话：$lastListedPackage")
+        ContextCompat.registerReceiver(
+            this,
+            screenReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_USER_PRESENT)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
 
         createNotificationChannels()
         refreshStatusNotification()
@@ -145,6 +192,7 @@ class MonitorService : Service() {
     }
 
     override fun onDestroy() {
+        unregisterReceiver(screenReceiver)
         scope.cancel()
         MonitorRepository.setServiceRunning(false)
         super.onDestroy()
@@ -163,8 +211,9 @@ class MonitorService : Service() {
             while (isActive) {
                 val now = System.currentTimeMillis()
                 val packageName = detector.currentForegroundPackage()
-                val entry = packageName?.let { VpnAppCatalog.find(it) }
                 val interactive = powerManager?.isInteractive ?: true
+                controlsAvailable = interactive && keyguardManager?.isKeyguardLocked != true
+                val entry = if (controlsAvailable) packageName?.let { VpnAppCatalog.find(it) } else null
 
                 val pollGap = if (previousPollAt == 0L) 0L else now - previousPollAt
                 previousPollAt = now
@@ -185,6 +234,9 @@ class MonitorService : Service() {
 
                 if (packageName != null) {
                     handleForegroundChange(packageName, entry, vpnActive, now)
+                } else if (lastPackage != null) {
+                    lastPackage = null
+                    MonitorRepository.onForegroundChanged(null, null)
                 }
                 updateConnectTask(entry, vpnActive, now)
                 updateAutoStop(entry, vpnActive, now)
@@ -196,14 +248,13 @@ class MonitorService : Service() {
                 // 息屏时把间隔拉长到 30 秒，而不是完全停下：完全依赖 SCREEN_ON 广播恢复，
                 // 在部分 ROM（实测小米 HyperOS 3 / Android 16 不投递该广播到后台应用）上，
                 // 进程若恰好是在息屏时被系统拉起，就会永久卡住不再轮询。
-                delay(
-                    when {
-                        !interactive -> POLL_INTERVAL_SCREEN_OFF_MS
-                        isConnecting() || hasPendingStop() -> POLL_INTERVAL_MS
-                        entry != null -> POLL_INTERVAL_LISTED_MS
-                        else -> POLL_INTERVAL_MS
-                    },
-                )
+                val interval = when {
+                    !controlsAvailable -> POLL_INTERVAL_SCREEN_OFF_MS
+                    isConnecting() || hasPendingStop() || leftListedAt != 0L -> POLL_INTERVAL_MS
+                    entry != null -> POLL_INTERVAL_LISTED_MS
+                    else -> POLL_INTERVAL_MS
+                }
+                withTimeoutOrNull(interval) { pollWakeups.receive() }
             }
         }
     }
@@ -337,6 +388,10 @@ class MonitorService : Service() {
         val existing = connectTask
         if (existing != null) {
             existing.hitIds += hitId
+            // 历史只保留最近 50 条，失败重试时不无限累积已经淘汰的记录 id。
+            if (existing.hitIds.size > MonitorRepository.MAX_HITS) {
+                existing.hitIds.subList(0, existing.hitIds.size - MonitorRepository.MAX_HITS).clear()
+            }
             existing.packageName = entry.packageName
             existing.displayName = entry.displayName
             existing.leftForegroundAt = 0L
@@ -365,6 +420,8 @@ class MonitorService : Service() {
      * 用户离开名单应用 → 收尾。
      */
     private fun updateConnectTask(entry: VpnRequiredApp?, vpnActive: Boolean, now: Long) {
+        // 控制入口是 Activity，锁屏时保留补连任务，解锁后再试。
+        if (!controlsAvailable && !vpnActive) return
         val task = connectTask ?: run {
             // 手上没有任务时也要盯一眼：用户可能就停在这个应用里没动过，
             // 而 VPN 是被系统或别的 VPN 应用顶掉的——「只在切前台时才判断」永远等不到
@@ -489,7 +546,7 @@ class MonitorService : Service() {
      *
      * 只对「刚刚离开的名单应用」动手，而且分两步：
      *
-     * 1. 先等 [AUTO_STOP_GRACE_MS]，这期间用户切回任何一个名单应用都会取消。
+     * 1. 按用户设置等待，这期间用户切回任何一个名单应用都会取消。
      *    用户从 ChatGPT 点开一个链接、或者只是下拉看一眼通知，都不该把隧道拆掉；
      * 2. 到点后按 [STOP_RETRY_INTERVAL_MS] 发停止指令，直到**回读到的 VPN 状态**真的变成未连接为止。
      *
@@ -498,6 +555,13 @@ class MonitorService : Service() {
      * 其实还挂着。现在一律以回读到的状态收尾，断不掉就如实报失败（见 README「已知限制」）。
      */
     private fun updateAutoStop(entry: VpnRequiredApp?, vpnActive: Boolean, now: Long) {
+        if (!SettingsStore.autoStopVpn.value) {
+            stopTask = null
+            disarmSession()
+            return
+        }
+        // 锁屏会挡住客户端的透明 Activity；不能在此时消耗重试次数或轮流拉起其它客户端。
+        if (!controlsAvailable) return
         val task = stopTask
 
         // 1) 正在断开：以回读到的真实状态推进
@@ -532,13 +596,8 @@ class MonitorService : Service() {
         }
 
         // 2) 没在断开：判断这一次该不该开始
-        if (!SettingsStore.autoStopVpn.value) {
-            listedArmed = false
-            leftListedAt = 0L
-            return
-        }
         if (entry != null) {
-            listedArmed = true
+            rememberSession(entry)
             leftListedAt = 0L
             return
         }
@@ -546,16 +605,15 @@ class MonitorService : Service() {
         if (!listedArmed) return
         if (!vpnActive) {
             // 反正已经没有 VPN 了，收工
-            listedArmed = false
-            leftListedAt = 0L
+            disarmSession()
             return
         }
         if (leftListedAt == 0L) {
             leftListedAt = now
-            Log.i(TAG, "已离开名单应用，${AUTO_STOP_GRACE_MS / 1000} 秒后自动断开 VPN")
-            return
+            Log.i(TAG, "已离开名单应用，${SettingsStore.autoStopDelaySeconds.value} 秒后自动断开 VPN")
         }
-        if (now - leftListedAt < AUTO_STOP_GRACE_MS) return
+        // 等待中修改设置也立即生效，0 秒不额外等待一轮。
+        if (now - leftListedAt < SettingsStore.autoStopDelaySeconds.value.toLong() * 1_000L) return
 
         // 先停「真正在建隧道的那一个」：用户手动开的另一个客户端也能被正确收掉。
         // 但隧道归属不一定读得到（实测 HyperOS 3 上 ownerUid 一律是 -1，见 VpnController），
@@ -584,12 +642,8 @@ class MonitorService : Service() {
     /** 收尾：把结果写回命中记录、推一条提醒。 */
     private fun finishStop(task: StopTask, stopped: Boolean, notice: HitNotice?) {
         task.appPackage?.let { MonitorRepository.markLatestHitStopped(it, stopped) }
-        if (!stopped) {
-            // 已安装的客户端全试过还是断不掉：这一次先收手，别每隔十几秒就把几个客户端轮流点一遍
-            // （每点一次都会把它们的控制页拉起来一次）。用户下次打开名单应用时会重新武装。
-            listedArmed = false
-            leftListedAt = 0L
-        }
+        disarmSession()
+        // 失败也收手：下次进入名单应用才重新武装，避免不断轮流拉起控制页面。
         Log.i(
             TAG,
             "停止结果：stopped=$stopped 试到第 ${task.engineIndex + 1}/${task.engines.size} 个客户端" +
@@ -850,14 +904,6 @@ class MonitorService : Service() {
 
         /** 用户离开名单应用之后再观察多久，避免「刚切走隧道才起来」被误判成没连上。 */
         private const val CONNECT_LEAVE_GRACE_MS = 6_000L
-
-        /**
-         * 「自动断开 VPN」：离开名单应用之后先等 [AUTO_STOP_GRACE_MS] 再动手。
-         *
-         * 这段时间是给「临时切走」留的——用户从 ChatGPT 点开一个链接、或者下拉看一下通知，
-         * 都会短暂离开名单应用；回到任何一个名单应用就取消，隧道不会被拆掉又立刻重建。
-         */
-        private const val AUTO_STOP_GRACE_MS = 8_000L
 
         /**
          * 断开的补发节奏与上限：以回读到的状态收尾，没断就再发；一个客户端发满

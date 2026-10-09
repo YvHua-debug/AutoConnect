@@ -16,6 +16,9 @@ object SettingsStore {
     /** v1.0 用的旧键名，只读一次做迁移，免得升级后把用户关掉的开关又打开。 */
     private const val KEY_AUTO_START_VPN_LEGACY = "auto_start_clash"
     private const val KEY_AUTO_STOP_VPN = "auto_stop_vpn"
+    private const val KEY_AUTO_STOP_DELAY_SECONDS = "auto_stop_delay_seconds"
+    const val DEFAULT_AUTO_STOP_DELAY_SECONDS = 8
+    const val MAX_AUTO_STOP_DELAY_SECONDS = 86_400
     private const val KEY_VPN_ENGINE = "vpn_engine"
     private const val KEY_SERVICE_ENABLED = "service_enabled"
     private const val KEY_CUSTOM_APPS = "custom_apps"
@@ -28,6 +31,7 @@ object SettingsStore {
 
     private val _autoStartVpn = MutableStateFlow(true)
     private val _autoStopVpn = MutableStateFlow(true)
+    private val _autoStopDelaySeconds = MutableStateFlow(DEFAULT_AUTO_STOP_DELAY_SECONDS)
     private val _vpnEngine = MutableStateFlow("")
     private val _serviceEnabled = MutableStateFlow(true)
     private val _customApps = MutableStateFlow<List<VpnRequiredApp>>(emptyList())
@@ -37,6 +41,7 @@ object SettingsStore {
 
     /** 离开名单应用后是否自动断开 VPN。 */
     val autoStopVpn: StateFlow<Boolean> = _autoStopVpn.asStateFlow()
+    val autoStopDelaySeconds: StateFlow<Int> = _autoStopDelaySeconds.asStateFlow()
 
     /** 用户选择的 VPN 客户端 id；空串表示「自动」（取第一个已安装的）。 */
     val vpnEngine: StateFlow<String> = _vpnEngine.asStateFlow()
@@ -56,6 +61,8 @@ object SettingsStore {
             store.getBoolean(KEY_AUTO_START_VPN_LEGACY, true),
         )
         _autoStopVpn.value = store.getBoolean(KEY_AUTO_STOP_VPN, true)
+        _autoStopDelaySeconds.value = store.getInt(KEY_AUTO_STOP_DELAY_SECONDS, DEFAULT_AUTO_STOP_DELAY_SECONDS)
+            .coerceIn(0, MAX_AUTO_STOP_DELAY_SECONDS)
         _vpnEngine.value = store.getString(KEY_VPN_ENGINE, "").orEmpty()
         _serviceEnabled.value = store.getBoolean(KEY_SERVICE_ENABLED, true)
         _customApps.value = decodeCustomApps(store.getString(KEY_CUSTOM_APPS, null))
@@ -69,6 +76,12 @@ object SettingsStore {
     fun setAutoStopVpn(enabled: Boolean) {
         _autoStopVpn.value = enabled
         prefs?.edit()?.putBoolean(KEY_AUTO_STOP_VPN, enabled)?.apply()
+    }
+
+    fun setAutoStopDelaySeconds(seconds: Int) {
+        require(seconds in 0..MAX_AUTO_STOP_DELAY_SECONDS)
+        _autoStopDelaySeconds.value = seconds
+        prefs?.edit()?.putInt(KEY_AUTO_STOP_DELAY_SECONDS, seconds)?.apply()
     }
 
     fun setVpnEngine(id: String) {

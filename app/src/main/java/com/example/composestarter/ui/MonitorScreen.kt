@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -49,9 +51,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.composestarter.R
 import com.example.composestarter.data.VpnAppCatalog
+import com.example.composestarter.data.SettingsStore
 import com.example.composestarter.data.VpnEngine
 import com.example.composestarter.data.VpnRequiredApp
 import com.example.composestarter.monitor.DetectionHit
@@ -68,12 +73,14 @@ fun MonitorScreen(
     permissions: MonitorPermissions.Snapshot,
     autoStartVpn: Boolean,
     autoStopVpn: Boolean,
+    autoStopDelaySeconds: Int,
     customApps: List<VpnRequiredApp>,
     showStatusNotification: Boolean,
     onToggleService: (Boolean) -> Unit,
     onToggleShowStatusNotification: (Boolean) -> Unit,
     onToggleVpnAutoStart: (Boolean) -> Unit,
     onToggleVpnAutoStop: (Boolean) -> Unit,
+    onSetAutoStopDelay: (Int) -> Unit,
     onSelectVpnEngine: (VpnEngine) -> Unit,
     onStartVpnNow: () -> Unit,
     onStopVpnNow: () -> Unit,
@@ -161,8 +168,10 @@ fun MonitorScreen(
                         state = state,
                         autoStartVpn = autoStartVpn,
                         autoStopVpn = autoStopVpn,
+                        autoStopDelaySeconds = autoStopDelaySeconds,
                         onToggleAutoStart = onToggleVpnAutoStart,
                         onToggleAutoStop = onToggleVpnAutoStop,
+                        onSetAutoStopDelay = onSetAutoStopDelay,
                         onSelectEngine = onSelectVpnEngine,
                         onStartNow = onStartVpnNow,
                         onStopNow = onStopVpnNow,
@@ -480,13 +489,16 @@ private fun VpnSection(
     state: MonitorUiState,
     autoStartVpn: Boolean,
     autoStopVpn: Boolean,
+    autoStopDelaySeconds: Int,
     onToggleAutoStart: (Boolean) -> Unit,
     onToggleAutoStop: (Boolean) -> Unit,
+    onSetAutoStopDelay: (Int) -> Unit,
     onSelectEngine: (VpnEngine) -> Unit,
     onStartNow: () -> Unit,
     onStopNow: () -> Unit,
 ) {
     val selected = state.engineSelected
+    var showDelayDialog by rememberSaveable { mutableStateOf(false) }
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
         Text(
             text = stringResource(R.string.vpn_hint),
@@ -530,11 +542,24 @@ private fun VpnSection(
         Spacer(modifier = Modifier.height(8.dp))
         ToggleRow(
             title = stringResource(R.string.vpn_auto_stop),
-            description = stringResource(R.string.vpn_auto_stop_desc),
+            description = if (autoStopDelaySeconds == 0) {
+                stringResource(R.string.vpn_auto_stop_immediate_desc)
+            } else {
+                stringResource(R.string.vpn_auto_stop_desc, autoStopDelaySeconds)
+            },
             checked = autoStopVpn,
             onCheckedChange = onToggleAutoStop,
             enabled = selected != null,
         )
+        TextButton(
+            onClick = { showDelayDialog = true },
+            enabled = autoStopVpn && selected != null,
+        ) {
+            Text(
+                if (autoStopDelaySeconds == 0) stringResource(R.string.vpn_stop_delay_immediate)
+                else stringResource(R.string.vpn_stop_delay_value, autoStopDelaySeconds),
+            )
+        }
         Spacer(modifier = Modifier.height(12.dp))
         Text(
             text = stringResource(R.string.vpn_profile_hint),
@@ -553,6 +578,61 @@ private fun VpnSection(
             }
         }
     }
+    if (showDelayDialog) {
+        StopDelayDialog(
+            seconds = autoStopDelaySeconds,
+            onDismiss = { showDelayDialog = false },
+            onSave = { seconds ->
+                onSetAutoStopDelay(seconds)
+                showDelayDialog = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun StopDelayDialog(seconds: Int, onDismiss: () -> Unit, onSave: (Int) -> Unit) {
+    var input by rememberSaveable { mutableStateOf(seconds.toString()) }
+    val value = input.toIntOrNull()
+    val valid = value != null && value in 0..SettingsStore.MAX_AUTO_STOP_DELAY_SECONDS
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.vpn_stop_delay_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { next ->
+                        if (next.length <= 6 && next.all { it in '0'..'9' }) input = next
+                    },
+                    label = { Text(stringResource(R.string.vpn_stop_delay_seconds)) },
+                    supportingText = { Text(stringResource(R.string.vpn_stop_delay_hint)) },
+                    isError = !valid,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    listOf(0, 8, 30, 60).forEach { preset ->
+                        TextButton(onClick = { input = preset.toString() }) {
+                            Text(
+                                if (preset == 0) stringResource(R.string.vpn_stop_delay_now)
+                                else stringResource(R.string.vpn_stop_delay_preset, preset),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { value?.let(onSave) }, enabled = valid) {
+                Text(stringResource(R.string.action_save_setting))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel_setting)) }
+        },
+    )
 }
 
 /** 一个可联动的客户端：装了才可选，选中即生效（服务下一轮轮询就会用上）。 */

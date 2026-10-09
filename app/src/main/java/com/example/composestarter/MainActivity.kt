@@ -10,10 +10,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.composestarter.data.SettingsStore
 import com.example.composestarter.data.VpnEngine
 import com.example.composestarter.monitor.MonitorPermissions
@@ -50,15 +50,17 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             ComposeStarterTheme {
-                val state by MonitorRepository.state.collectAsState()
-                val autoStartVpn by SettingsStore.autoStartVpn.collectAsState()
-                val autoStopVpn by SettingsStore.autoStopVpn.collectAsState()
-                val customApps by SettingsStore.customApps.collectAsState()
+                val state by MonitorRepository.state.collectAsStateWithLifecycle()
+                val autoStartVpn by SettingsStore.autoStartVpn.collectAsStateWithLifecycle()
+                val autoStopVpn by SettingsStore.autoStopVpn.collectAsStateWithLifecycle()
+                val autoStopDelaySeconds by SettingsStore.autoStopDelaySeconds.collectAsStateWithLifecycle()
+                val customApps by SettingsStore.customApps.collectAsStateWithLifecycle()
                 MonitorScreen(
                     state = state,
                     permissions = permissions,
                     autoStartVpn = autoStartVpn,
                     autoStopVpn = autoStopVpn,
+                    autoStopDelaySeconds = autoStopDelaySeconds,
                     customApps = customApps,
                     showStatusNotification = permissions.statusNotificationVisible,
                     onToggleService = { enabled ->
@@ -73,6 +75,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onToggleVpnAutoStart = { enabled -> SettingsStore.setAutoStartVpn(enabled) },
                     onToggleVpnAutoStop = { enabled -> SettingsStore.setAutoStopVpn(enabled) },
+                    onSetAutoStopDelay = { seconds -> SettingsStore.setAutoStopDelaySeconds(seconds) },
                     onSelectVpnEngine = { engine -> SettingsStore.setVpnEngine(engine.id) },
                     onToggleShowStatusNotification = {
                         // 应用没法自己隐藏前台服务的通知，只能把用户送到系统里那条通道的设置页

@@ -11,7 +11,6 @@ import androidx.core.graphics.drawable.toBitmap
 data class InstalledApp(
     val packageName: String,
     val label: String,
-    val icon: Bitmap?,
 )
 
 /** 图标统一按这个尺寸缩好，避免把整张原图留在内存里。 */
@@ -45,11 +44,14 @@ fun listLaunchableApps(context: Context): List<InstalledApp> {
             InstalledApp(
                 packageName = info.packageName,
                 label = info.loadLabel(packageManager).toString(),
-                icon = runCatching {
-                    info.loadIcon(packageManager).toBitmap(ICON_SIZE, ICON_SIZE)
-                }.getOrNull(),
             )
         }
         .sortedBy { it.label.lowercase() }
         .toList()
 }
+
+/** 按需读取当前可见行的图标，应用列表只保存包名和名称。 */
+fun loadAppIcon(context: Context, packageName: String): Bitmap? = runCatching {
+    context.applicationContext.packageManager.getApplicationIcon(packageName)
+        .toBitmap(ICON_SIZE, ICON_SIZE)
+}.getOrNull()
