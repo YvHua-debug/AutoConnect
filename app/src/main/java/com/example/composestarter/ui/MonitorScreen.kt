@@ -511,7 +511,7 @@ private fun VpnSection(
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
         )
-        VpnEngine.entries.forEach { engine ->
+        VpnEngine.supportedEntries.forEach { engine ->
             EngineRow(
                 engine = engine,
                 installed = state.engineInstalled.contains(engine.id),

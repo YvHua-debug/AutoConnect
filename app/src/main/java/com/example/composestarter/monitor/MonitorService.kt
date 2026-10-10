@@ -420,6 +420,11 @@ class MonitorService : Service() {
      * 用户离开名单应用 → 收尾。
      */
     private fun updateConnectTask(entry: VpnRequiredApp?, vpnActive: Boolean, now: Long) {
+        if (engine?.supportsAutoControl == false) {
+            connectTask?.let { applyConnectResult(it, established = false, notice = null) }
+            connectTask = null
+            return
+        }
         // 控制入口是 Activity，锁屏时保留补连任务，解锁后再试。
         if (!controlsAvailable && !vpnActive) return
         val task = connectTask ?: run {
@@ -555,7 +560,8 @@ class MonitorService : Service() {
      * 其实还挂着。现在一律以回读到的状态收尾，断不掉就如实报失败（见 README「已知限制」）。
      */
     private fun updateAutoStop(entry: VpnRequiredApp?, vpnActive: Boolean, now: Long) {
-        if (!SettingsStore.autoStopVpn.value) {
+        if (!SettingsStore.autoStopVpn.value || engine?.supportsAutoControl == false ||
+            lastVpnOwner?.supportsAutoControl == false) {
             stopTask = null
             disarmSession()
             return
@@ -620,9 +626,10 @@ class MonitorService : Service() {
         // 所以还要留后手：这个客户端停不掉就依次换其它已安装的客户端再试，全试完隧道还在才报失败。
         // 多试一个客户端，总比停在「断开失败」上强。
         val preferred = vpnController.activeVpnEngine() ?: engine ?: return
-        val candidates = buildList {
-            add(preferred)
-            addAll(vpnController.installedEngines().filter { it != preferred })
+        val candidates = VpnEngine.stopCandidates(preferred, vpnController.installedEngines())
+        if (candidates.isEmpty()) {
+            disarmSession()
+            return
         }
         val started = StopTask(candidates, lastListedPackage, lastListedName).also { stopTask = it }
         if (candidates.size > 1) {

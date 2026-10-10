@@ -92,7 +92,7 @@
     <string name="vpn_engine_not_installed">未安装</string>
     <string name="vpn_engine_stop_ok">可启停</string>
     <string name="vpn_engine_stop_risky">停止不可靠</string>
-    <string name="vpn_hint">三个客户端都通过它们自己对外导出的控制入口启停，本应用不碰你的配置、节点和订阅。</string>
+    <string name="vpn_hint">适配名单中的客户端通过其外部控制入口启停，本应用不碰你的配置、节点和订阅。</string>
     <string name="vpn_clash_stop_warning">实测 Clash Meta 的停止入口在冷启动时经常收不到指令（要它的界面被打开过一次才生效，这是它自己的限制）。想要稳定的自动断开，建议选 FLClash 或 Surfboard。</string>
     <string name="vpn_auto_start">命中名单时自动启动 VPN</string>
     <string name="vpn_auto_start_desc">后台静默执行；首次启动需要系统 VPN 授权弹窗</string>

@@ -12,7 +12,8 @@ import com.example.composestarter.data.VpnEngine
 /**
  * 把「启动 / 停止 VPN」翻译成各 VPN 客户端自己导出的外部控制入口（见 [VpnEngine]）。
  *
- * 这些入口就是个没有界面、启动后立即结束的透明 Activity，所以整个过程对用户不可见。
+ * 支持控制的入口是透明 Activity，使用独立临时任务，避免拉出客户端已有的主界面。
+ * 没有外部控制入口的客户端不参与联动，不从后台启动主界面。
  * 有两条系统限制是本应用绕不过去的：
  * 1. 首次启动 VPN 时系统会弹出一次 VPN 授权确认框（Android 的硬性要求），授权一次之后不再出现；
  * 2. 从后台启动 Activity 需要「悬浮窗」权限（Android 10+ 的后台启动限制），小米机型还要额外允许
@@ -37,10 +38,13 @@ class VpnController(private val context: Context) {
     }.getOrDefault(false)
 
     /** 设备上装了哪些可联动的客户端，顺序与 [VpnEngine] 的声明顺序一致。 */
-    fun installedEngines(): List<VpnEngine> = VpnEngine.entries.filter { isInstalled(it) }
+    fun installedEngines(): List<VpnEngine> = VpnEngine.supportedEntries.filter { isInstalled(it) }
 
     /** 启动客户端的 VPN，返回是否成功发出控制指令。 */
-    fun start(engine: VpnEngine): Boolean = send(engine, engine.startIntent())
+    fun start(engine: VpnEngine): Boolean {
+        val intent = engine.startIntent() ?: return false
+        return send(engine, intent)
+    }
 
     /** 停止客户端的 VPN，返回是否成功发出控制指令。 */
     fun stop(engine: VpnEngine): Boolean {

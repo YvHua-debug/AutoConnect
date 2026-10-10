@@ -4,7 +4,7 @@ import android.content.Intent
 import android.net.Uri
 
 /**
- * 本应用可以联动的 VPN 客户端。
+ * 本应用可以识别的 VPN 客户端；具备外部控制入口的可自动联动。
  *
  * 三家都把自己对外部开放的控制入口写在清单里，本应用只负责把「命中名单 / 离开名单」翻译成
  * 这些入口，不碰它们的配置、节点和订阅：
@@ -25,7 +25,7 @@ enum class VpnEngine(
     val id: String,
     val displayName: String,
     val packageName: String,
-    private val controlActivity: String,
+    private val controlActivity: String? = null,
     private val startAction: String? = null,
     private val stopAction: String? = null,
     private val startUri: String? = null,
@@ -72,10 +72,22 @@ enum class VpnEngine(
         stopUri = "surfboard:///stop",
         stopReliable = true,
     ),
+
+    // 0.7.7 的 VPN 服务不导出，图块受系统权限保护；没有外部启停入口。
+    // 仅用于隧道归属识别，不列入适配名单，也不能被选为联动客户端。
+    UMIVPN(
+        id = "umivpn",
+        displayName = "UmiVPN",
+        packageName = "com5vnetwork.umi",
+        stopReliable = false,
+    ),
     ;
 
-    /** 启动指令。 */
-    fun startIntent(): Intent = controlIntent(startAction, startUri)
+    val supportsAutoControl: Boolean get() = controlActivity != null
+
+    /** 启动指令，客户端未开放控制入口时返回 null。 */
+    fun startIntent(): Intent? =
+        if (!supportsAutoControl) null else controlIntent(startAction, startUri)
 
     /** 停止指令，客户端没提供停止入口时返回 null。 */
     fun stopIntent(): Intent? =
@@ -88,24 +100,34 @@ enum class VpnEngine(
             Intent(requireNotNull(action))
         }
         return intent.apply {
-            setClassName(packageName, controlActivity)
-            // 目标 Activity 都是透明 + noHistory，启动后立刻结束，不会盖住用户当前界面
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+            setClassName(packageName, requireNotNull(controlActivity))
+            // NEW_TASK 单独使用会复用客户端主界面的任务并将它带到前台。
+            // 控制页用独立临时任务，结束后回到原应用；启动和停止都必须隔离。
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
         }
     }
 
     companion object {
+        /** 适配名单只包含提供外部启停入口的客户端。 */
+        val supportedEntries: List<VpnEngine> = entries.filter { it.supportsAutoControl }
+
         fun byId(id: String?): VpnEngine? = entries.firstOrNull { it.id == id }
 
         /**
          * 「用户选的那个」——选了但没装（或压根没选）时退回第一个已安装的。
          *
-         * 三家里只装了一个的用户什么都不用配置；装了多个的可以在界面上点选。
+         * 没有控制入口的客户端不参与选择，旧设置里保存的此类 id 也不生效。
          */
         fun effective(selectedId: String?, installed: List<VpnEngine>): VpnEngine? {
             val selected = byId(selectedId)
-            return if (selected != null && selected in installed) selected else installed.firstOrNull()
+            return if (selected != null && selected.supportsAutoControl && selected in installed) selected
+            else installed.firstOrNull { it.supportsAutoControl }
         }
+
+        /** 只向具备控制入口的客户端发停止指令，兜底时也跳过不支持控制的客户端。 */
+        fun stopCandidates(preferred: VpnEngine, installed: List<VpnEngine>): List<VpnEngine> =
+            if (!preferred.supportsAutoControl) emptyList()
+            else (listOf(preferred) + installed).distinct().filter { it.supportsAutoControl }
     }
 }

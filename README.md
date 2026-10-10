@@ -3,9 +3,12 @@
 自动连接助手：检测到需要代理的应用被打开时，后台静默拉起 VPN（Clash Meta / FLClash / Surfboard），
 离开名单应用后再把 VPN 断开。
 
+手机上的 UmiVPN 0.7.7 未开放可用的外部启停入口，暂不列入适配名单。
+
 Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保留构建必需的清单与资源。
 
-> 当前版本 **1.1.4**：正式包开启代码和资源裁剪，应用选择器按可见行加载图标，
+> 当前版本 **1.1.5**：修复后台启停指令把代理软件主界面带到前台的问题，控制页改用独立临时任务；
+> 1.1.4：正式包开启代码和资源裁剪，应用选择器按可见行加载图标，
 > 界面退到后台时暂停界面订阅，并限制名称缓存和待连接记录的容量。
 > 1.1.3 支持自定义离开应用后的 VPN 断开延迟，0～86400 秒，默认 8 秒。
 > 1.1.2 修复后台长时间暂停后漏读应用切换事件、退出应用仍保留旧前台状态、
@@ -60,11 +63,17 @@ Kotlin + Jetpack Compose + Material 3，UI 全部由 Compose 实现，XML 仅保
      0.8.98 及以上**。
 
      这三个入口就是各客户端给自己的桌面快捷方式 / 快捷设置图块用的同一套接口（真机核对：点 FLClash、
-     Surfboard 的图块，执行的就是这里发出的那条指令）。目标 Activity 都是透明主题 + `noHistory`，
-     启动后立即结束，不会盖住用户当前界面；加上 `SYSTEM_ALERT_WINDOW`（悬浮窗）权限，
+     Surfboard 的图块，执行的就是这里发出的那条指令）。目标控制 Activity 为透明主题，执行后结束。
+     指令使用 `NEW_TASK | MULTIPLE_TASK | EXCLUDE_FROM_RECENTS` 创建独立临时任务，
+     防止复用客户端主界面的任务并将它一起带到前台；启动和停止采用相同标志。
+     加上 `SYSTEM_ALERT_WINDOW`（悬浮窗）权限，
      Android 10+ 允许本项目从后台启动它。
    - 「VPN 联动」卡片列出设备上已装的客户端，点一下即切换；只装一个时什么都不用配
      （不选就是「自动」，取第一个已安装的）
+   - UmiVPN（`com5vnetwork.umi`）0.7.7 暂不列入适配名单：其 `TmVpnService` 不导出，
+     下拉控制栏的 `MyTileService` 受系统 `BIND_QUICK_SETTINGS_TILE` 权限保护，
+     当前没有可供本应用调用的外部启停接口。内部仅保留隧道归属识别。
+     核对源码：[UmiVPN 官方 Android 清单](https://github.com/5VNetwork/umivpn/blob/main/android/app/src/main/AndroidManifest.xml)。
    - **以「回读到的真实 VPN 状态」为准，而不是发一条指令 + 6 秒后看一眼就完事**：
      只要名单应用还在前台、VPN 还没连上，就每 2 秒补发一次启动指令（最多 4 次，约前 10 秒），
      之后降成每分钟一次继续兜，连上了或用户离开名单应用才收尾。
