@@ -21,7 +21,7 @@ class ForegroundAppDetector(private val context: Context) {
     private val event = UsageEvents.Event()
 
     /** 上一次查到的前台包名与查询结束时间，用于做增量查询。 */
-    private var tracker = ForegroundTracker()
+    private var tracker = newTracker()
     private var lastQueryEnd = 0L
 
     /** 是否已获得「使用情况访问权限」。 */
@@ -56,7 +56,7 @@ class ForegroundAppDetector(private val context: Context) {
     fun currentForegroundPackage(): String? {
         val usageStatsManager = context.getSystemService(UsageStatsManager::class.java) ?: return null
         val now = System.currentTimeMillis()
-        if (now < lastQueryEnd) tracker = ForegroundTracker()
+        if (now < lastQueryEnd) tracker = newTracker()
         val start = ForegroundTracker.queryStart(lastQueryEnd, now)
 
         val events = usageStatsManager.queryEvents(start, now) ?: return tracker.packageName
@@ -66,10 +66,25 @@ class ForegroundAppDetector(private val context: Context) {
             events.getNextEvent(event)
             if (event.eventType == resumedEventType || event.eventType == pausedEventType) {
                 tracker.accept(event.packageName, event.className, event.timeStamp, event.eventType == resumedEventType)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                when (event.eventType) {
+                    UsageEvents.Event.ACTIVITY_STOPPED ->
+                        tracker.stopped(event.packageName, event.className, event.timeStamp)
+                    UsageEvents.Event.DEVICE_SHUTDOWN, UsageEvents.Event.DEVICE_STARTUP ->
+                        tracker.deviceRestarted(event.timeStamp)
+                }
             }
         }
         return tracker.packageName
     }
+
+    /** 在本轮查询后调用；VPN 需求包含失去焦点但仍可见的小窗 / 分屏应用。 */
+    fun currentPackageRequiringVpn(isListed: (String) -> Boolean): String? =
+        tracker.packageRequiringVpn(isListed)
+
+    private fun newTracker() = ForegroundTracker(
+        tracksVisibility = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
+    )
 
     /**
      * 当前是否有 VPN 处于连接状态。

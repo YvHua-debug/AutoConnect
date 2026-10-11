@@ -1,22 +1,52 @@
 package com.example.composestarter.monitor
 
 /** 保存事件状态；重叠查询里的旧事件不能覆盖已经读到的新状态。 */
-internal class ForegroundTracker {
+internal class ForegroundTracker(private val tracksVisibility: Boolean = false) {
     var packageName: String? = null
         private set
     private var activityName: String? = null
     private var latestAt = Long.MIN_VALUE
+    private val visibleActivities = linkedMapOf<Pair<String, String?>, Long>()
+
+    /** 优先当前焦点；小窗取得焦点时，仍保留其它可见的名单应用。 */
+    fun packageRequiringVpn(isListed: (String) -> Boolean): String? {
+        packageName?.takeIf(isListed)?.let { return it }
+        if (!tracksVisibility) return null
+        return visibleActivities.entries.sortedByDescending { it.value }
+            .firstOrNull { isListed(it.key.first) }?.key?.first
+    }
 
     fun accept(packageName: String?, activityName: String?, at: Long, resumed: Boolean) {
         if (packageName == null || at < latestAt || activityName in CONTROL_ACTIVITIES) return
         latestAt = at
         if (resumed) {
+            if (tracksVisibility) visibleActivities[packageName to activityName] = at
             this.packageName = packageName
             this.activityName = activityName
         } else if (this.packageName == packageName && this.activityName == activityName) {
             this.packageName = null
             this.activityName = null
         }
+    }
+
+    /** Android 10+ 的 paused 只表示失去焦点，stopped 才表示窗口不可见。 */
+    fun stopped(packageName: String?, activityName: String?, at: Long) {
+        if (!tracksVisibility || packageName == null || at < latestAt || activityName in CONTROL_ACTIVITIES) return
+        latestAt = at
+        visibleActivities.remove(packageName to activityName)
+        if (this.packageName == packageName && this.activityName == activityName) {
+            this.packageName = null
+            this.activityName = null
+        }
+    }
+
+    /** 重启设备时系统不会为每个旧窗口补发 stopped。 */
+    fun deviceRestarted(at: Long) {
+        if (at < latestAt) return
+        latestAt = at
+        visibleActivities.clear()
+        packageName = null
+        activityName = null
     }
 
     companion object {

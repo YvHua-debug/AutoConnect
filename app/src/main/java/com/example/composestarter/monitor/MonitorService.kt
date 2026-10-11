@@ -213,7 +213,11 @@ class MonitorService : Service() {
                 val packageName = detector.currentForegroundPackage()
                 val interactive = powerManager?.isInteractive ?: true
                 controlsAvailable = interactive && keyguardManager?.isKeyguardLocked != true
-                val entry = if (controlsAvailable) packageName?.let { VpnAppCatalog.find(it) } else null
+                val foregroundEntry = if (controlsAvailable) packageName?.let { VpnAppCatalog.find(it) } else null
+                val entry = if (controlsAvailable) {
+                    detector.currentPackageRequiringVpn { VpnAppCatalog.find(it) != null }
+                        ?.let { VpnAppCatalog.find(it) }
+                } else null
 
                 val pollGap = if (previousPollAt == 0L) 0L else now - previousPollAt
                 previousPollAt = now
@@ -233,7 +237,7 @@ class MonitorService : Service() {
                 )
 
                 if (packageName != null) {
-                    handleForegroundChange(packageName, entry, vpnActive, now)
+                    handleForegroundChange(packageName, foregroundEntry, vpnActive, now)
                 } else if (lastPackage != null) {
                     lastPackage = null
                     MonitorRepository.onForegroundChanged(null, null)
@@ -547,7 +551,7 @@ class MonitorService : Service() {
     }
 
     /**
-     * 「名单应用退到后台 → 把 VPN 断开」——每轮轮询都跑一遍。
+     * 「所有名单应用都不可见 → 把 VPN 断开」——每轮轮询都跑一遍。
      *
      * 只对「刚刚离开的名单应用」动手，而且分两步：
      *
