@@ -6,6 +6,64 @@ import org.junit.Test
 class ForegroundTrackerTest {
     private fun ForegroundTracker.requiredPackage() = packageRequiringVpn { it.startsWith("listed.") }
 
+    private fun ForegroundTracker.requiredWithPinned(vararg packages: String) =
+        packageRequiringVpn(packages.toSet()) { it.startsWith("listed.") }
+
+    @Test fun edgePinnedWindowKeepsVpnAfterActivityStops() {
+        val tracker = ForegroundTracker(tracksVisibility = true)
+        tracker.accept("listed.window", "Window", 100L, true)
+        tracker.accept("listed.window", "Window", 200L, false)
+        tracker.accept("unlisted.home", "Home", 201L, true)
+        tracker.stopped("listed.window", "Window", 300L)
+        assertEquals("unlisted.home", tracker.packageName)
+        assertEquals("listed.window", tracker.requiredWithPinned("listed.window"))
+    }
+
+    @Test fun closingPinnedWindowEndsSessionWithoutAnotherUsageEvent() {
+        val tracker = ForegroundTracker(tracksVisibility = true)
+        tracker.accept("listed.window", "Window", 100L, true)
+        tracker.stopped("listed.window", "Window", 200L)
+        assertEquals("listed.window", tracker.requiredWithPinned("listed.window"))
+        assertNull(tracker.requiredWithPinned())
+    }
+
+    @Test fun monitorRestartStillFindsAlreadyPinnedListedWindow() {
+        val tracker = ForegroundTracker(tracksVisibility = true)
+        tracker.accept("unlisted.home", "Home", 100L, true)
+        assertEquals("listed.window", tracker.requiredWithPinned("listed.window"))
+        assertNull(tracker.requiredWithPinned())
+    }
+
+    @Test fun unlistedPinnedWindowDoesNotKeepListedSession() {
+        val tracker = ForegroundTracker(tracksVisibility = true)
+        tracker.accept("listed.main", "Main", 100L, true)
+        tracker.stopped("listed.main", "Main", 200L)
+        assertNull(tracker.requiredWithPinned("unlisted.window"))
+    }
+
+    @Test fun restoringPinnedWindowKeepsVpnThroughVisibleActivity() {
+        val tracker = ForegroundTracker(tracksVisibility = true)
+        tracker.accept("listed.window", "Window", 100L, true)
+        tracker.stopped("listed.window", "Window", 200L)
+        assertEquals("listed.window", tracker.requiredWithPinned("listed.window"))
+        tracker.accept("listed.window", "Window", 300L, true)
+        assertEquals("listed.window", tracker.requiredWithPinned())
+        tracker.stopped("listed.window", "Window", 400L)
+        assertNull(tracker.requiredWithPinned())
+    }
+
+    @Test fun closingOnePinnedListedWindowKeepsAnother() {
+        val tracker = ForegroundTracker(tracksVisibility = true)
+        assertEquals("listed.first", tracker.requiredWithPinned("listed.first", "listed.second"))
+        assertEquals("listed.second", tracker.requiredWithPinned("listed.second"))
+        assertNull(tracker.requiredWithPinned())
+    }
+
+    @Test fun legacyAndroidIgnoresUnsupportedPinnedSnapshot() {
+        val tracker = ForegroundTracker(tracksVisibility = false)
+        assertNull(tracker.requiredWithPinned("listed.window"))
+    }
+
     @Test fun unlistedFloatingWindowDoesNotEndListedSession() {
         val tracker = ForegroundTracker(tracksVisibility = true)
         tracker.accept("listed.main", "Main", 100L, true)

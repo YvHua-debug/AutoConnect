@@ -23,6 +23,7 @@ class ForegroundAppDetector(private val context: Context) {
     /** 上一次查到的前台包名与查询结束时间，用于做增量查询。 */
     private var tracker = newTracker()
     private var lastQueryEnd = 0L
+    private val freeformDetector = MiuiFreeformDetector()
 
     /** 是否已获得「使用情况访问权限」。 */
     fun hasUsageAccess(): Boolean {
@@ -78,9 +79,9 @@ class ForegroundAppDetector(private val context: Context) {
         return tracker.packageName
     }
 
-    /** 在本轮查询后调用；VPN 需求包含失去焦点但仍可见的小窗 / 分屏应用。 */
+    /** 在本轮查询后调用；VPN 需求包含失去焦点的可见窗口，以及 HyperOS 贴边收起的小窗。 */
     fun currentPackageRequiringVpn(isListed: (String) -> Boolean): String? =
-        tracker.packageRequiringVpn(isListed)
+        tracker.packageRequiringVpn(freeformDetector.pinnedPackages(), isListed)
 
     private fun newTracker() = ForegroundTracker(
         tracksVisibility = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,

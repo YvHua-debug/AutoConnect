@@ -8,12 +8,16 @@ internal class ForegroundTracker(private val tracksVisibility: Boolean = false) 
     private var latestAt = Long.MIN_VALUE
     private val visibleActivities = linkedMapOf<Pair<String, String?>, Long>()
 
-    /** 优先当前焦点；小窗取得焦点时，仍保留其它可见的名单应用。 */
-    fun packageRequiringVpn(isListed: (String) -> Boolean): String? {
+    /** 优先当前焦点；失去焦点或被系统贴边收起的小窗仍可维持名单会话。 */
+    fun packageRequiringVpn(
+        pinnedPackages: Set<String> = emptySet(),
+        isListed: (String) -> Boolean,
+    ): String? {
         packageName?.takeIf(isListed)?.let { return it }
         if (!tracksVisibility) return null
         return visibleActivities.entries.sortedByDescending { it.value }
             .firstOrNull { isListed(it.key.first) }?.key?.first
+            ?: pinnedPackages.firstOrNull(isListed)
     }
 
     fun accept(packageName: String?, activityName: String?, at: Long, resumed: Boolean) {
